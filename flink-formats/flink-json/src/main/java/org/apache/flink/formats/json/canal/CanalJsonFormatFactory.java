@@ -20,14 +20,14 @@ package org.apache.flink.formats.json.canal;
 
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.serialization.SerializationSchema;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.ConfigOption;
-import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.formats.json.JsonOptions;
+import org.apache.flink.formats.json.TimestampFormat;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.format.DecodingFormat;
 import org.apache.flink.table.connector.format.EncodingFormat;
-import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.DeserializationFormatFactory;
 import org.apache.flink.table.factories.DynamicTableFactory;
@@ -41,75 +41,98 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
+import static org.apache.flink.formats.json.JsonOptions.ENCODE_DECIMAL_AS_PLAIN_NUMBER;
+import static org.apache.flink.formats.json.canal.CanalJsonOptions.DATABASE_INCLUDE;
+import static org.apache.flink.formats.json.canal.CanalJsonOptions.IGNORE_PARSE_ERRORS;
+import static org.apache.flink.formats.json.canal.CanalJsonOptions.JSON_MAP_NULL_KEY_LITERAL;
+import static org.apache.flink.formats.json.canal.CanalJsonOptions.JSON_MAP_NULL_KEY_MODE;
+import static org.apache.flink.formats.json.canal.CanalJsonOptions.TABLE_INCLUDE;
+import static org.apache.flink.formats.json.canal.CanalJsonOptions.TIMESTAMP_FORMAT;
+import static org.apache.flink.formats.json.canal.CanalJsonOptions.validateDecodingFormatOptions;
+import static org.apache.flink.formats.json.canal.CanalJsonOptions.validateEncodingFormatOptions;
+
 /**
- * Format factory for providing configured instances of Canal JSON to RowData {@link DeserializationSchema}.
+ * Format factory for providing configured instances of Canal JSON to RowData {@link
+ * DeserializationSchema}.
  */
-public class CanalJsonFormatFactory implements DeserializationFormatFactory, SerializationFormatFactory {
+public class CanalJsonFormatFactory
+        implements DeserializationFormatFactory, SerializationFormatFactory {
 
-	public static final String IDENTIFIER = "canal-json";
+    public static final String IDENTIFIER = "canal-json";
 
-	public static final ConfigOption<Boolean> IGNORE_PARSE_ERRORS = ConfigOptions
-		.key("ignore-parse-errors")
-		.booleanType()
-		.defaultValue(false)
-		.withDescription("Optional flag to skip fields and rows with parse errors instead of failing, " +
-			"fields are set to null in case of errors. Default is false.");
+    @Override
+    public DecodingFormat<DeserializationSchema<RowData>> createDecodingFormat(
+            DynamicTableFactory.Context context, ReadableConfig formatOptions) {
+        FactoryUtil.validateFactoryOptions(this, formatOptions);
+        validateDecodingFormatOptions(formatOptions);
 
-	@SuppressWarnings("unchecked")
-	@Override
-	public DecodingFormat<DeserializationSchema<RowData>> createDecodingFormat(
-			DynamicTableFactory.Context context,
-			ReadableConfig formatOptions) {
-		FactoryUtil.validateFactoryOptions(this, formatOptions);
-		final boolean ignoreParseErrors = formatOptions.get(IGNORE_PARSE_ERRORS);
+        final String database = formatOptions.getOptional(DATABASE_INCLUDE).orElse(null);
+        final String table = formatOptions.getOptional(TABLE_INCLUDE).orElse(null);
+        final boolean ignoreParseErrors = formatOptions.get(IGNORE_PARSE_ERRORS);
+        final TimestampFormat timestampFormat = JsonOptions.getTimestampFormat(formatOptions);
 
-		return new DecodingFormat<DeserializationSchema<RowData>>() {
-			@Override
-			public DeserializationSchema<RowData> createRuntimeDecoder(
-					DynamicTableSource.Context context, DataType producedDataType) {
-				final RowType rowType = (RowType) producedDataType.getLogicalType();
-				final TypeInformation<RowData> rowDataTypeInfo =
-					(TypeInformation<RowData>) context.createTypeInformation(producedDataType);
-				return new CanalJsonDeserializationSchema(
-					rowType,
-					rowDataTypeInfo,
-					ignoreParseErrors);
-			}
+        return new CanalJsonDecodingFormat(database, table, ignoreParseErrors, timestampFormat);
+    }
 
-			@Override
-			public ChangelogMode getChangelogMode() {
-				return ChangelogMode.newBuilder()
-					.addContainedKind(RowKind.INSERT)
-					.addContainedKind(RowKind.UPDATE_BEFORE)
-					.addContainedKind(RowKind.UPDATE_AFTER)
-					.addContainedKind(RowKind.DELETE)
-					.build();
-			}
-		};
-	}
+    @Override
+    public EncodingFormat<SerializationSchema<RowData>> createEncodingFormat(
+            DynamicTableFactory.Context context, ReadableConfig formatOptions) {
 
-	@Override
-	public EncodingFormat<SerializationSchema<RowData>> createEncodingFormat(
-			DynamicTableFactory.Context context,
-			ReadableConfig formatOptions) {
-		throw new UnsupportedOperationException("Canal format doesn't support as a sink format yet.");
-	}
+        FactoryUtil.validateFactoryOptions(this, formatOptions);
+        validateEncodingFormatOptions(formatOptions);
 
-	@Override
-	public String factoryIdentifier() {
-		return IDENTIFIER;
-	}
+        TimestampFormat timestampFormat = JsonOptions.getTimestampFormat(formatOptions);
+        JsonOptions.MapNullKeyMode mapNullKeyMode = JsonOptions.getMapNullKeyMode(formatOptions);
+        String mapNullKeyLiteral = formatOptions.get(JSON_MAP_NULL_KEY_LITERAL);
 
-	@Override
-	public Set<ConfigOption<?>> requiredOptions() {
-		return Collections.emptySet();
-	}
+        final boolean encodeDecimalAsPlainNumber =
+                formatOptions.get(ENCODE_DECIMAL_AS_PLAIN_NUMBER);
 
-	@Override
-	public Set<ConfigOption<?>> optionalOptions() {
-		Set<ConfigOption<?>> options = new HashSet<>();
-		options.add(IGNORE_PARSE_ERRORS);
-		return options;
-	}
+        return new EncodingFormat<SerializationSchema<RowData>>() {
+            @Override
+            public ChangelogMode getChangelogMode() {
+                return ChangelogMode.newBuilder()
+                        .addContainedKind(RowKind.INSERT)
+                        .addContainedKind(RowKind.UPDATE_BEFORE)
+                        .addContainedKind(RowKind.UPDATE_AFTER)
+                        .addContainedKind(RowKind.DELETE)
+                        .build();
+            }
 
+            @Override
+            public SerializationSchema<RowData> createRuntimeEncoder(
+                    DynamicTableSink.Context context, DataType consumedDataType) {
+                final RowType rowType = (RowType) consumedDataType.getLogicalType();
+                return new CanalJsonSerializationSchema(
+                        rowType,
+                        timestampFormat,
+                        mapNullKeyMode,
+                        mapNullKeyLiteral,
+                        encodeDecimalAsPlainNumber);
+            }
+        };
+    }
+
+    @Override
+    public String factoryIdentifier() {
+        return IDENTIFIER;
+    }
+
+    @Override
+    public Set<ConfigOption<?>> requiredOptions() {
+        return Collections.emptySet();
+    }
+
+    @Override
+    public Set<ConfigOption<?>> optionalOptions() {
+        Set<ConfigOption<?>> options = new HashSet<>();
+        options.add(IGNORE_PARSE_ERRORS);
+        options.add(TIMESTAMP_FORMAT);
+        options.add(DATABASE_INCLUDE);
+        options.add(TABLE_INCLUDE);
+        options.add(JSON_MAP_NULL_KEY_MODE);
+        options.add(JSON_MAP_NULL_KEY_LITERAL);
+        options.add(ENCODE_DECIMAL_AS_PLAIN_NUMBER);
+        return options;
+    }
 }

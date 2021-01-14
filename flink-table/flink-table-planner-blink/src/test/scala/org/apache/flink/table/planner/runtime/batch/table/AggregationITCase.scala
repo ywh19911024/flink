@@ -26,6 +26,7 @@ import org.apache.flink.table.functions.AggregateFunction
 import org.apache.flink.table.planner.plan.utils.JavaUserDefinedAggFunctions.{CountDistinctWithMergeAndReset, WeightedAvgWithMergeAndReset}
 import org.apache.flink.table.planner.runtime.utils.{BatchTableEnvUtil, BatchTestBase, CollectionBatchExecTable}
 import org.apache.flink.table.planner.utils.{CountAggFunction, NonMergableCount}
+import org.apache.flink.table.utils.LegacyRowResource
 import org.apache.flink.test.util.TestBaseUtils
 
 import org.junit._
@@ -37,6 +38,9 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 class AggregationITCase extends BatchTestBase {
+
+  @Rule
+  def usesLegacyRows: LegacyRowResource = LegacyRowResource.INSTANCE
 
   @Test
   def testAggregationWithCaseClass(): Unit = {
@@ -184,7 +188,13 @@ class AggregationITCase extends BatchTestBase {
 
     val t = CollectionBatchExecTable.get3TupleDataSet(tEnv, "a, b, c")
       .groupBy('b)
-      .select('b, 'a.sum, countFun('c), wAvgFun('b, 'a), wAvgFun('a, 'a), countDistinct('c))
+      .select(
+        'b,
+        'a.sum,
+        countFun('c),
+        call(wAvgFun, 'b, 'a),
+        call(wAvgFun, 'a, 'a),
+        countDistinct('c))
 
     val expected = "1,1,1,1,1,1\n" + "2,5,2,2,2,2\n" + "3,15,3,3,5,3\n" + "4,34,4,4,8,4\n" +
       "5,65,5,5,13,5\n" + "6,111,6,6,18,6\n"
@@ -433,10 +443,6 @@ class Top10 extends AggregateFunction[Array[JTuple2[JInt, JFloat]], Array[JTuple
   }
 
   override def getValue(acc: Array[JTuple2[JInt, JFloat]]): Array[JTuple2[JInt, JFloat]] = acc
-
-  def resetAccumulator(acc: Array[JTuple2[JInt, JFloat]]): Unit = {
-    java.util.Arrays.fill(acc.asInstanceOf[Array[Object]], null)
-  }
 
   def merge(
       acc: Array[JTuple2[JInt, JFloat]],

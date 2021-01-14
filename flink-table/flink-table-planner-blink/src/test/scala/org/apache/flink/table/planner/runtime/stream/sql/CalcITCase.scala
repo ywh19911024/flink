@@ -29,8 +29,9 @@ import org.apache.flink.table.data.{GenericRowData, RowData}
 import org.apache.flink.table.planner.factories.TestValuesTableFactory
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase.row
 import org.apache.flink.table.planner.runtime.utils._
-import org.apache.flink.table.runtime.typeutils.RowDataTypeInfo
+import org.apache.flink.table.runtime.typeutils.InternalTypeInfo
 import org.apache.flink.table.types.logical.{BigIntType, IntType, VarCharType}
+import org.apache.flink.table.utils.LegacyRowResource
 import org.apache.flink.types.Row
 
 import org.junit.Assert._
@@ -39,6 +40,9 @@ import org.junit._
 import scala.collection.Seq
 
 class CalcITCase extends StreamingTestBase {
+
+  @Rule
+  def usesLegacyRows: LegacyRowResource = LegacyRowResource.INSTANCE
 
   @Test
   def testGenericRowAndRowData(): Unit = {
@@ -52,7 +56,7 @@ class CalcITCase extends StreamingTestBase {
     val data = List(rowData)
 
     implicit val tpe: TypeInformation[GenericRowData] =
-      new RowDataTypeInfo(
+      InternalTypeInfo.ofFields(
         new IntType(),
         new IntType(),
         new BigIntType()).asInstanceOf[TypeInformation[GenericRowData]]
@@ -62,7 +66,7 @@ class CalcITCase extends StreamingTestBase {
     val t = ds.toTable(tEnv, 'a, 'b, 'c)
     tEnv.registerTable("MyTableRow", t)
 
-    val outputType = new RowDataTypeInfo(
+    val outputType = InternalTypeInfo.ofFields(
       new IntType(),
       new IntType(),
       new BigIntType())
@@ -95,7 +99,7 @@ class CalcITCase extends StreamingTestBase {
     val t = ds.toTable(tEnv, 'a, 'b, 'c)
     tEnv.registerTable("MyTableRow", t)
 
-    val outputType = new RowDataTypeInfo(
+    val outputType = InternalTypeInfo.ofFields(
       new VarCharType(VarCharType.MAX_LENGTH),
       new VarCharType(VarCharType.MAX_LENGTH),
       new IntType())
@@ -121,7 +125,7 @@ class CalcITCase extends StreamingTestBase {
     val data = List(rowData)
 
     implicit val tpe: TypeInformation[GenericRowData] =
-      new RowDataTypeInfo(
+      InternalTypeInfo.ofFields(
         new IntType(),
         new IntType(),
         new BigIntType()).asInstanceOf[TypeInformation[GenericRowData]]
@@ -222,7 +226,7 @@ class CalcITCase extends StreamingTestBase {
     val result = tEnv.sqlQuery(sqlQuery)
     val sink = TestSinkUtil.configureSink(result, new TestingAppendTableSink())
     tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal("MySink", sink)
-    execInsertTableAndWaitResult(result, "MySink")
+    table.executeInsert("MySink").await()
 
     val expected = List("0,0,0", "1,1,1", "2,2,2")
     assertEquals(expected.sorted, sink.getAppendResults.sorted)

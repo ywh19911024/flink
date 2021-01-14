@@ -33,9 +33,9 @@ Main Differences Between the Two Planners
 1. Blink treats batch jobs as a special case of streaming. As such, the conversion between Table and DataSet is also not supported, and batch jobs will not be translated into `DateSet` programs but translated into `DataStream` programs, the same as the streaming jobs.
 2. The Blink planner does not support `BatchTableSource`, use bounded `StreamTableSource` instead of it.
 3. The implementations of `FilterableTableSource` for the old planner and the Blink planner are incompatible. The old planner will push down `PlannerExpression`s into `FilterableTableSource`, while the Blink planner will push down `Expression`s.
-4. String based key-value config options (Please see the documentation about [Configuration]({{ site.baseurl }}/dev/table/config.html) for details) are only used for the Blink planner.
+4. String based key-value config options (Please see the documentation about [Configuration]({% link dev/table/config.md %}) for details) are only used for the Blink planner.
 5. The implementation(`CalciteConfig`) of `PlannerConfig` in two planners is different.
-6. The Blink planner will optimize multiple-sinks into one DAG (supported only on `TableEnvironment`, not on `StreamTableEnvironment`). The old planner will always optimize each sink into a new DAG, where all DAGs are independent of each other.
+6. The Blink planner will optimize multiple-sinks into one DAG on both `TableEnvironment` and `StreamTableEnvironment`. The old planner will always optimize each sink into a new DAG, where all DAGs are independent of each other.
 7. The old planner does not support catalog statistics now, while the Blink planner does.
 
 
@@ -51,21 +51,19 @@ All Table API and SQL programs for batch and streaming follow the same pattern. 
 // create a TableEnvironment for specific planner batch or streaming
 TableEnvironment tableEnv = ...; // see "Create a TableEnvironment" section
 
-// create a Table
-tableEnv.connect(...).createTemporaryTable("table1");
+// create an input Table
+tableEnv.executeSql("CREATE TEMPORARY TABLE table1 ... WITH ( 'connector' = ... )");
 // register an output Table
-tableEnv.connect(...).createTemporaryTable("outputTable");
+tableEnv.executeSql("CREATE TEMPORARY TABLE outputTable ... WITH ( 'connector' = ... )");
 
 // create a Table object from a Table API query
-Table tapiResult = tableEnv.from("table1").select(...);
+Table table2 = tableEnv.from("table1").select(...);
 // create a Table object from a SQL query
-Table sqlResult  = tableEnv.sqlQuery("SELECT ... FROM table1 ... ");
+Table table3 = tableEnv.sqlQuery("SELECT ... FROM table1 ... ");
 
 // emit a Table API result Table to a TableSink, same for SQL result
-tapiResult.insertInto("outputTable");
-
-// execute
-tableEnv.execute("java_job");
+TableResult tableResult = table2.executeInsert("outputTable");
+tableResult...
 
 {% endhighlight %}
 </div>
@@ -76,21 +74,19 @@ tableEnv.execute("java_job");
 // create a TableEnvironment for specific planner batch or streaming
 val tableEnv = ... // see "Create a TableEnvironment" section
 
-// create a Table
-tableEnv.connect(...).createTemporaryTable("table1")
+// create an input Table
+tableEnv.executeSql("CREATE TEMPORARY TABLE table1 ... WITH ( 'connector' = ... )")
 // register an output Table
-tableEnv.connect(...).createTemporaryTable("outputTable")
+tableEnv.executeSql("CREATE TEMPORARY TABLE outputTable ... WITH ( 'connector' = ... )")
 
 // create a Table from a Table API query
-val tapiResult = tableEnv.from("table1").select(...)
+val table2 = tableEnv.from("table1").select(...)
 // create a Table from a SQL query
-val sqlResult  = tableEnv.sqlQuery("SELECT ... FROM table1 ...")
+val table3 = tableEnv.sqlQuery("SELECT ... FROM table1 ...")
 
 // emit a Table API result Table to a TableSink, same for SQL result
-tapiResult.insertInto("outputTable")
-
-// execute
-tableEnv.execute("scala_job")
+val tableResult = table2.executeInsert("outputTable")
+tableResult...
 
 {% endhighlight %}
 </div>
@@ -101,22 +97,19 @@ tableEnv.execute("scala_job")
 # create a TableEnvironment for specific planner batch or streaming
 table_env = ... # see "Create a TableEnvironment" section
 
-# register a Table
-table_env.connect(...).create_temporary_table("table1")
-
+# register an input Table
+table_env.executeSql("CREATE TEMPORARY TABLE table1 ... WITH ( 'connector' = ... )")
 # register an output Table
-table_env.connect(...).create_temporary_table("outputTable")
+table_env.executeSql("CREATE TEMPORARY TABLE outputTable ... WITH ( 'connector' = ... )")
 
 # create a Table from a Table API query
-tapi_result = table_env.from_path("table1").select(...)
+table2 = table_env.from_path("table1").select(...)
 # create a Table from a SQL query
-sql_result  = table_env.sql_query("SELECT ... FROM table1 ...")
+table3 = table_env.sql_query("SELECT ... FROM table1 ...")
 
 # emit a Table API result Table to a TableSink, same for SQL result
-tapi_result.insert_into("outputTable")
-
-# execute
-table_env.execute("python_job")
+table_result = table3.execute_insert("outputTable")
+table_result...
 
 {% endhighlight %}
 </div>
@@ -296,7 +289,7 @@ Create Tables in the Catalog
 
 A `TableEnvironment` maintains a map of catalogs of tables which are created with an identifier. Each
 identifier consists of 3 parts: catalog name, database name and object name. If a catalog or database is not
-specified, the current default value will be used (see examples in the [Table identifier expanding]({{ site.baseurl }}/dev/table/common.html#table-identifier-expanding) section).
+specified, the current default value will be used (see examples in the [Table identifier expanding]({% link dev/table/common.md %}#table-identifier-expanding) section).
 
 Tables can be either virtual (`VIEWS`) or regular (`TABLES`). `VIEWS` can be created from an
 existing `Table` object, usually the result of a Table API or SQL query. `TABLES` describe
@@ -307,7 +300,7 @@ external data, such as a file, database table, or message queue.
 Tables may either be temporary, and tied to the lifecycle of a single Flink session, or permanent,
 and visible across multiple Flink sessions and clusters.
 
-Permanent tables require a [catalog]({{ site.baseurl }}/dev/table/catalogs.html) (such as Hive Metastore)
+Permanent tables require a [catalog]({% link dev/table/catalogs.md %}) (such as Hive Metastore)
 to maintain metadata about the table. Once a permanent table is created, it is visible to any Flink
 session that is connected to the catalog and will continue to exist until the table is explicitly
 dropped.
@@ -386,8 +379,8 @@ registered `Table` will *not* be shared.
 
 #### Connector Tables
 
-It is also possible to create a `TABLE` as known from relational databases from a [connector]({{ site.baseurl }}/dev/table/connect.html) declaration.
-The connector describes the external system that stores the data of a table. Storage systems such as Apacha Kafka or a regular file system can be declared here.
+It is also possible to create a `TABLE` as known from relational databases from a [connector]({% link dev/table/connect.md %}) declaration.
+The connector describes the external system that stores the data of a table. Storage systems such as Apache Kafka or a regular file system can be declared here.
 
 <div class="codetabs" markdown="1">
 <div data-lang="java" markdown="1">
@@ -425,7 +418,7 @@ table_environment \
 
 <div data-lang="DDL" markdown="1">
 {% highlight sql %}
-tableEnvironment.sqlUpdate("CREATE [TEMPORARY] TABLE MyTable (...) WITH (...)")
+tableEnvironment.executeSql("CREATE [TEMPORARY] TABLE MyTable (...) WITH (...)")
 {% endhighlight %}
 </div>
 </div>
@@ -507,7 +500,7 @@ The Table API is a language-integrated query API for Scala and Java. In contrast
 
 The API is based on the `Table` class which represents a table (streaming or batch) and offers methods to apply relational operations. These methods return a new `Table` object, which represents the result of applying the relational operation on the input `Table`. Some relational operations are composed of multiple method calls such as `table.groupBy(...).select()`, where `groupBy(...)` specifies a grouping of `table`, and `select(...)` the projection on the grouping of `table`.
 
-The [Table API]({{ site.baseurl }}/dev/table/tableApi.html) document describes all Table API operations that are supported on streaming and batch tables.
+The [Table API]({% link dev/table/tableApi.md %}) document describes all Table API operations that are supported on streaming and batch tables.
 
 The following example shows a simple Table API aggregation query:
 
@@ -567,9 +560,9 @@ table_env = # see "Create a TableEnvironment" section
 orders = table_env.from_path("Orders")
 # compute revenue for all customers from France
 revenue = orders \
-    .filter("cCountry === 'FRANCE'") \
-    .group_by("cID, cName") \
-    .select("cID, cName, revenue.sum AS revSum")
+    .filter(orders.cCountry == 'FRANCE') \
+    .group_by(orders.cID, orders.cName) \
+    .select(orders.cID, orders.cName, orders.revenue.sum.alias('revSum'))
 
 # emit or convert Table
 # execute query
@@ -583,7 +576,7 @@ revenue = orders \
 
 Flink's SQL integration is based on [Apache Calcite](https://calcite.apache.org), which implements the SQL standard. SQL queries are specified as regular Strings.
 
-The [SQL]({{ site.baseurl }}/dev/table/sql/index.html) document describes Flink's SQL support for streaming and batch tables.
+The [SQL]({% link dev/table/sql/index.md %}) document describes Flink's SQL support for streaming and batch tables.
 
 The following example shows how to specify a query and return the result as a `Table`.
 
@@ -662,7 +655,7 @@ TableEnvironment tableEnv = ...; // see "Create a TableEnvironment" section
 // register "RevenueFrance" output table
 
 // compute revenue for all customers from France and emit to "RevenueFrance"
-tableEnv.sqlUpdate(
+tableEnv.executeSql(
     "INSERT INTO RevenueFrance " +
     "SELECT cID, cName, SUM(revenue) AS revSum " +
     "FROM Orders " +
@@ -670,7 +663,6 @@ tableEnv.sqlUpdate(
     "GROUP BY cID, cName"
   );
 
-// execute query
 {% endhighlight %}
 </div>
 
@@ -683,7 +675,7 @@ val tableEnv = ... // see "Create a TableEnvironment" section
 // register "RevenueFrance" output table
 
 // compute revenue for all customers from France and emit to "RevenueFrance"
-tableEnv.sqlUpdate("""
+tableEnv.executeSql("""
   |INSERT INTO RevenueFrance
   |SELECT cID, cName, SUM(revenue) AS revSum
   |FROM Orders
@@ -691,7 +683,6 @@ tableEnv.sqlUpdate("""
   |GROUP BY cID, cName
   """.stripMargin)
 
-// execute query
 {% endhighlight %}
 
 </div>
@@ -705,7 +696,7 @@ table_env = ... # see "Create a TableEnvironment" section
 # register "RevenueFrance" output table
 
 # compute revenue for all customers from France and emit to "RevenueFrance"
-table_env.sql_update(
+table_env.execute_sql(
     "INSERT INTO RevenueFrance "
     "SELECT cID, cName, SUM(revenue) AS revSum "
     "FROM Orders "
@@ -713,7 +704,6 @@ table_env.sql_update(
     "GROUP BY cID, cName"
 )
 
-# execute query
 {% endhighlight %}
 </div>
 </div>
@@ -736,9 +726,9 @@ A `Table` is emitted by writing it to a `TableSink`. A `TableSink` is a generic 
 
 A batch `Table` can only be written to a `BatchTableSink`, while a streaming `Table` requires either an `AppendStreamTableSink`, a `RetractStreamTableSink`, or an `UpsertStreamTableSink`. 
 
-Please see the documentation about [Table Sources & Sinks]({{ site.baseurl }}/dev/table/sourceSinks.html) for details about available sinks and instructions for how to implement a custom `TableSink`.
+Please see the documentation about [Table Sources & Sinks]({% link dev/table/sourceSinks.md %}) for details about available sinks and instructions for how to implement a custom `TableSink`.
 
-The `Table.insertInto(String tableName)` method emits the `Table` to a registered `TableSink`. The method looks up the `TableSink` from the catalog by the name and validates that the schema of the `Table` is identical to the schema of the `TableSink`. 
+The `Table.executeInsert(String tableName)` method emits the `Table` to a registered `TableSink`. The method looks up the `TableSink` from the catalog by the name and validates that the schema of the `Table` is identical to the schema of the `TableSink`. 
 
 The following examples shows how to emit a `Table`:
 
@@ -752,19 +742,19 @@ TableEnvironment tableEnv = ...; // see "Create a TableEnvironment" section
 final Schema schema = new Schema()
     .field("a", DataTypes.INT())
     .field("b", DataTypes.STRING())
-    .field("c", DataTypes.LONG());
+    .field("c", DataTypes.BIGINT());
 
-tableEnv.connect(new FileSystem("/path/to/file"))
+tableEnv.connect(new FileSystem().path("/path/to/file"))
     .withFormat(new Csv().fieldDelimiter('|').deriveSchema())
     .withSchema(schema)
     .createTemporaryTable("CsvSinkTable");
 
 // compute a result Table using Table API operators and/or SQL queries
 Table result = ...
-// emit the result Table to the registered TableSink
-result.insertInto("CsvSinkTable");
 
-// execute the program
+// emit the result Table to the registered TableSink
+result.executeInsert("CsvSinkTable");
+
 {% endhighlight %}
 </div>
 
@@ -777,9 +767,9 @@ val tableEnv = ... // see "Create a TableEnvironment" section
 val schema = new Schema()
     .field("a", DataTypes.INT())
     .field("b", DataTypes.STRING())
-    .field("c", DataTypes.LONG())
+    .field("c", DataTypes.BIGINT())
 
-tableEnv.connect(new FileSystem("/path/to/file"))
+tableEnv.connect(new FileSystem().path("/path/to/file"))
     .withFormat(new Csv().fieldDelimiter('|').deriveSchema())
     .withSchema(schema)
     .createTemporaryTable("CsvSinkTable")
@@ -788,9 +778,8 @@ tableEnv.connect(new FileSystem("/path/to/file"))
 val result: Table = ...
 
 // emit the result Table to the registered TableSink
-result.insertInto("CsvSinkTable")
+result.executeInsert("CsvSinkTable")
 
-// execute the program
 {% endhighlight %}
 </div>
 
@@ -800,7 +789,7 @@ result.insertInto("CsvSinkTable")
 table_env = ... # see "Create a TableEnvironment" section
 
 # create a TableSink
-t_env.connect(FileSystem().path("/path/to/file")))
+table_env.connect(FileSystem().path("/path/to/file")))
     .with_format(Csv()
                  .field_delimiter(',')
                  .deriveSchema())
@@ -814,9 +803,8 @@ t_env.connect(FileSystem().path("/path/to/file")))
 result = ...
 
 # emit the result Table to the registered TableSink
-result.insert_into("CsvSinkTable")
+result.execute_insert("CsvSinkTable")
 
-# execute the program
 {% endhighlight %}
 </div>
 </div>
@@ -832,35 +820,39 @@ The behavior of translating and executing a query is different for the two plann
 <div class="codetabs" markdown="1">
 
 <div data-lang="Blink planner" markdown="1">
-Table API and SQL queries are translated into [DataStream]({{ site.baseurl }}/dev/datastream_api.html) programs whether their input is streaming or batch. A query is internally represented as a logical query plan and is translated in two phases:
+Table API and SQL queries are translated into [DataStream]({% link dev/datastream_api.md %}) programs whether their input is streaming or batch. A query is internally represented as a logical query plan and is translated in two phases:
 
 1. Optimization of the logical plan,
 2. Translation into a DataStream program.
 
 a Table API or SQL query is translated when:
 
-* `TableEnvironment.execute()` is called. A `Table` (emitted to a `TableSink` through `Table.insertInto()`) or a SQL update query (specified through `TableEnvironment.sqlUpdate()`) will be buffered in `TableEnvironment` first. All sinks will be optimized into one DAG.
+* `TableEnvironment.executeSql()` is called. This method is used for executing a given statement, and the sql query is translated immediately once this method is called.
+* `Table.executeInsert()` is called. This method is used for inserting the table content to the given sink path, and the Table API is translated immediately once this method is called.
+* `Table.execute()` is called. This method is used for collecting the table content to local client, and the Table API is translated immediately once this method is called.
+* `StatementSet.execute()` is called. A `Table` (emitted to a sink through `StatementSet.addInsert()`) or an INSERT statement (specified through `StatementSet.addInsertSql()`) will be buffered in `StatementSet` first. They are translated once `StatementSet.execute()` is called. All sinks will be optimized into one DAG.
 * A `Table` is translated when it is converted into a `DataStream` (see [Integration with DataStream and DataSet API](#integration-with-datastream-and-dataset-api)). Once translated, it's a regular DataStream program and is executed when `StreamExecutionEnvironment.execute()` is called.
+
+<span class="label label-danger">Attention</span> **Since 1.11 version, `sqlUpdate()` method and `insertInto()` method are deprecated. If the Table program is built from these two methods, we must use `StreamTableEnvironment.execute()` method instead of `StreamExecutionEnvironment.execute()` method to execute it.**
+
 </div>
 
 <div data-lang="Old planner" markdown="1">
-Table API and SQL queries are translated into [DataStream]({{ site.baseurl }}/dev/datastream_api.html) or [DataSet]({{ site.baseurl }}/dev/batch) programs depending on whether their input is a streaming or batch input. A query is internally represented as a logical query plan and is translated in two phases:
+Table API and SQL queries are translated into [DataStream]({% link dev/datastream_api.md %}) or [DataSet]({% link dev/batch/index.md %}) programs depending on whether their input is a streaming or batch input. A query is internally represented as a logical query plan and is translated in two phases:
 
 1. Optimization of the logical plan
 2. Translation into a DataStream or DataSet program
 
-For streaming, a Table API or SQL query is translated when:
+A Table API or SQL query is translated when:
 
-* `TableEnvironment.execute()` is called. A `Table` (emitted to a `TableSink` through `Table.insertInto()`) or a SQL update query (specified through `TableEnvironment.sqlUpdate()`) will be buffered in `TableEnvironment` first. Each sink will be optimized independently. The execution graph contains multiple independent sub-DAGs.
-* A `Table` is translated when it is converted into a `DataStream` (see [Integration with DataStream and DataSet API](#integration-with-datastream-and-dataset-api)). Once translated, it's a regular DataStream program and is executed when `StreamExecutionEnvironment.execute()` is called.
+* `TableEnvironment.executeSql()` is called. This method is used for executing a given statement, and the sql query is translated immediately once this method is called.
+* `Table.executeInsert()` is called. This method is used for inserting the table content to the given sink path, and the Table API is translated immediately once this method is called.
+* `Table.execute()` is called. This method is used for collecting the table content to local client, and the Table API is translated immediately once this method is called.
+* `StatementSet.execute()` is called. A `Table` (emitted to a sink through `StatementSet.addInsert()`) or an INSERT statement (specified through `StatementSet.addInsertSql()`) will be buffered in `StatementSet` first. They are translated once `StatementSet.execute()` is called. Each sink will be optimized independently. The execution graph contains multiple independent sub-DAGs.
+* For streaming, a `Table` is translated when it is converted into a `DataStream` (see [Integration with DataStream and DataSet API](#integration-with-datastream-and-dataset-api)). Once translated, it's a regular DataStream program and is executed when `StreamExecutionEnvironment.execute()` is called. For batch, a `Table` is translated when it is converted into a `DataSet` (see [Integration with DataStream and DataSet API](#integration-with-datastream-and-dataset-api)). Once translated, it's a regular DataSet program and is executed when `ExecutionEnvironment.execute()` is called.
 
-For batch, a Table API or SQL query is translated when:
+<span class="label label-danger">Attention</span> **Since 1.11 version, `sqlUpdate()` method and `insertInto()` method are deprecated. For streaming, if the Table program is built from these two methods, we must use `StreamTableEnvironment.execute()` method instead of `StreamExecutionEnvironment.execute()` method to execute it. For batch, if the Table program is built from these two methods, we must use `BatchTableEnvironment.execute()` method instead of `ExecutionEnvironment.execute()` method to execute it.**
 
-* a `Table` is emitted to a `TableSink`, i.e., when `Table.insertInto()` is called.
-* a SQL update query is specified, i.e., when `TableEnvironment.sqlUpdate()` is called.
-* a `Table` is converted into a `DataSet` (see [Integration with DataStream and DataSet API](#integration-with-datastream-and-dataset-api)).
-
-Once translated, a Table API or SQL query is handled like a regular DataSet program and is executed when `ExecutionEnvironment.execute()` is called.
 </div>
 
 </div>
@@ -873,7 +865,7 @@ Integration with DataStream and DataSet API
 Both planners on stream can integrate with the `DataStream` API. Only old planner can integrate with the `DataSet API`, Blink planner on batch could not be combined with both.
 **Note:** The `DataSet` API discussed below is only relevant for the old planner on batch.
 
-Table API and SQL queries can be easily integrated with and embedded into [DataStream]({{ site.baseurl }}/dev/datastream_api.html) and [DataSet]({{ site.baseurl }}/dev/batch) programs. For instance, it is possible to query an external table (for example from a RDBMS), do some pre-processing, such as filtering, projecting, aggregating, or joining with meta data, and then further process the data with either the DataStream or DataSet API (and any of the libraries built on top of these APIs, such as CEP or Gelly). Inversely, a Table API or SQL query can also be applied on the result of a DataStream or DataSet program.
+Table API and SQL queries can be easily integrated with and embedded into [DataStream]({% link dev/datastream_api.md %}) and [DataSet]({% link dev/batch/index.md %}) programs. For instance, it is possible to query an external table (for example from a RDBMS), do some pre-processing, such as filtering, projecting, aggregating, or joining with meta data, and then further process the data with either the DataStream or DataSet API (and any of the libraries built on top of these APIs, such as CEP or Gelly). Inversely, a Table API or SQL query can also be applied on the result of a DataStream or DataSet program.
 
 This interaction can be achieved by converting a `DataStream` or `DataSet` into a `Table` and vice versa. In this section, we describe how these conversions are done.
 
@@ -1039,7 +1031,9 @@ val retractStream: DataStream[(Boolean, Row)] = tableEnv.toRetractStream[Row](ta
 </div>
 </div>
 
-**Note:** A detailed discussion about dynamic tables and their properties is given in the [Dynamic Tables](streaming/dynamic_tables.html) document.
+**Note:** A detailed discussion about dynamic tables and their properties is given in the [Dynamic Tables](streaming/dynamic_tables.html) document. 
+
+<span class="label label-danger">Attention</span> **Once the Table is converted to a DataStream, please use the `StreamExecutionEnvironment.execute()` method to execute the DataStream program.**
 
 #### Convert a Table into a DataSet
 
@@ -1083,6 +1077,8 @@ val dsTuple: DataSet[(String, Int)] = tableEnv.toDataSet[(String, Int)](table)
 {% endhighlight %}
 </div>
 </div>
+
+<span class="label label-danger">Attention</span> **Once the Table is converted to a DataSet, we must use the ExecutionEnvironment.execute method to execute the DataSet program.**
 
 {% top %}
 
@@ -1435,16 +1431,19 @@ It is possible to tweak the set of optimization rules which are applied in diffe
 </div>
 
 
-### Explaining a Table
+Explaining a Table
+------------------
 
 The Table API provides a mechanism to explain the logical and optimized query plans to compute a `Table`. 
-This is done through the `TableEnvironment.explain(table)` method or `TableEnvironment.explain()` method. `explain(table)` returns the plan of a given `Table`. `explain()` returns the result of a multiple sinks plan and is mainly used for the Blink planner. It returns a String describing three plans:
+This is done through the `Table.explain()` method or `StatementSet.explain()` method. `Table.explain()`returns the plan of a `Table`. `StatementSet.explain()` returns the plan of multiple sinks. It returns a String describing three plans:
 
 1. the Abstract Syntax Tree of the relational query, i.e., the unoptimized logical query plan,
 2. the optimized logical query plan, and
 3. the physical execution plan.
 
-The following code shows an example and the corresponding output for given `Table` using `explain(table)`:
+`TableEnvironment.explainSql()` and `TableEnvironment.executeSql()` support execute a `EXPLAIN` statement to get the plans, Please refer to [EXPLAIN]({% link dev/table/sql/explain.md %}) page.
+
+The following code shows an example and the corresponding output for given `Table` using `Table.explain()` method:
 
 <div class="codetabs" markdown="1">
 <div data-lang="java" markdown="1">
@@ -1455,14 +1454,14 @@ StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
 DataStream<Tuple2<Integer, String>> stream1 = env.fromElements(new Tuple2<>(1, "hello"));
 DataStream<Tuple2<Integer, String>> stream2 = env.fromElements(new Tuple2<>(1, "hello"));
 
+// explain Table API
 Table table1 = tEnv.fromDataStream(stream1, $("count"), $("word"));
 Table table2 = tEnv.fromDataStream(stream2, $("count"), $("word"));
 Table table = table1
   .where($("word").like("F%"))
   .unionAll(table2);
+System.out.println(table.explain());
 
-String explanation = tEnv.explain(table);
-System.out.println(explanation);
 {% endhighlight %}
 </div>
 
@@ -1476,9 +1475,8 @@ val table2 = env.fromElements((1, "hello")).toTable(tEnv, $"count", $"word")
 val table = table1
   .where($"word".like("F%"))
   .unionAll(table2)
+println(table.explain())
 
-val explanation: String = tEnv.explain(table)
-println(explanation)
 {% endhighlight %}
 </div>
 
@@ -1490,18 +1488,18 @@ t_env = StreamTableEnvironment.create(env)
 table1 = t_env.from_elements([(1, "hello")], ["count", "word"])
 table2 = t_env.from_elements([(1, "hello")], ["count", "word"])
 table = table1 \
-    .where("LIKE(word, 'F%')") \
+    .where(table1.word.like('F%')) \
     .union_all(table2)
+print(table.explain())
 
-explanation = t_env.explain(table)
-print(explanation)
 {% endhighlight %}
 </div>
 </div>
 
-<div class="codetabs" markdown="1">
-<div data-lang="java" markdown="1">
+The result of the above exmaple is
+<div>
 {% highlight text %}
+
 == Abstract Syntax Tree ==
 LogicalUnion(all=[true])
   LogicalFilter(condition=[LIKE($1, _UTF-16LE'F%')])
@@ -1532,97 +1530,11 @@ Stage 2 : Data Source
 			Stage 5 : Operator
 				content : from: (count, word)
 				ship_strategy : REBALANCE
+
 {% endhighlight %}
 </div>
 
-<div data-lang="scala" markdown="1">
-{% highlight text %}
-== Abstract Syntax Tree ==
-LogicalUnion(all=[true])
-  LogicalFilter(condition=[LIKE($1, _UTF-16LE'F%')])
-    FlinkLogicalDataStreamScan(id=[1], fields=[count, word])
-  FlinkLogicalDataStreamScan(id=[2], fields=[count, word])
-
-== Optimized Logical Plan ==
-DataStreamUnion(all=[true], union all=[count, word])
-  DataStreamCalc(select=[count, word], where=[LIKE(word, _UTF-16LE'F%')])
-    DataStreamScan(id=[1], fields=[count, word])
-  DataStreamScan(id=[2], fields=[count, word])
-
-== Physical Execution Plan ==
-Stage 1 : Data Source
-	content : collect elements with CollectionInputFormat
-
-Stage 2 : Data Source
-	content : collect elements with CollectionInputFormat
-
-	Stage 3 : Operator
-		content : from: (count, word)
-		ship_strategy : REBALANCE
-
-		Stage 4 : Operator
-			content : where: (LIKE(word, _UTF-16LE'F%')), select: (count, word)
-			ship_strategy : FORWARD
-
-			Stage 5 : Operator
-				content : from: (count, word)
-				ship_strategy : REBALANCE
-{% endhighlight %}
-</div>
-
-<div data-lang="python" markdown="1">
-{% highlight text %}
-== Abstract Syntax Tree ==
-LogicalUnion(all=[true])
-  LogicalFilter(condition=[LIKE($1, _UTF-16LE'F%')])
-    FlinkLogicalDataStreamScan(id=[3], fields=[count, word])
-  FlinkLogicalDataStreamScan(id=[6], fields=[count, word])
-
-== Optimized Logical Plan ==
-DataStreamUnion(all=[true], union all=[count, word])
-  DataStreamCalc(select=[count, word], where=[LIKE(word, _UTF-16LE'F%')])
-    DataStreamScan(id=[3], fields=[count, word])
-  DataStreamScan(id=[6], fields=[count, word])
-
-== Physical Execution Plan ==
-Stage 1 : Data Source
-	content : collect elements with CollectionInputFormat
-
-	Stage 2 : Operator
-		content : Flat Map
-		ship_strategy : FORWARD
-
-		Stage 3 : Operator
-			content : Map
-			ship_strategy : FORWARD
-
-Stage 4 : Data Source
-	content : collect elements with CollectionInputFormat
-
-	Stage 5 : Operator
-		content : Flat Map
-		ship_strategy : FORWARD
-
-		Stage 6 : Operator
-			content : Map
-			ship_strategy : FORWARD
-
-			Stage 7 : Operator
-				content : Map
-				ship_strategy : FORWARD
-
-				Stage 8 : Operator
-					content : where: (LIKE(word, _UTF-16LE'F%')), select: (count, word)
-					ship_strategy : FORWARD
-
-					Stage 9 : Operator
-						content : Map
-						ship_strategy : FORWARD
-{% endhighlight %}
-</div>
-</div>
-
-The following code shows an example and the corresponding output for multiple-sinks plan using `explain()`:
+The following code shows an example and the corresponding output for multiple-sinks plan using `StatementSet.explain()` method:
 
 <div class="codetabs" markdown="1">
 <div data-lang="java" markdown="1">
@@ -1635,30 +1547,32 @@ final Schema schema = new Schema()
     .field("count", DataTypes.INT())
     .field("word", DataTypes.STRING());
 
-tEnv.connect(new FileSystem("/source/path1"))
+tEnv.connect(new FileSystem().path("/source/path1"))
     .withFormat(new Csv().deriveSchema())
     .withSchema(schema)
     .createTemporaryTable("MySource1");
-tEnv.connect(new FileSystem("/source/path2"))
+tEnv.connect(new FileSystem().path("/source/path2"))
     .withFormat(new Csv().deriveSchema())
     .withSchema(schema)
     .createTemporaryTable("MySource2");
-tEnv.connect(new FileSystem("/sink/path1"))
+tEnv.connect(new FileSystem().path("/sink/path1"))
     .withFormat(new Csv().deriveSchema())
     .withSchema(schema)
     .createTemporaryTable("MySink1");
-tEnv.connect(new FileSystem("/sink/path2"))
+tEnv.connect(new FileSystem().path("/sink/path2"))
     .withFormat(new Csv().deriveSchema())
     .withSchema(schema)
     .createTemporaryTable("MySink2");
+    
+StatementSet stmtSet = tEnv.createStatementSet();
 
 Table table1 = tEnv.from("MySource1").where($("word").like("F%"));
-table1.insertInto("MySink1");
+stmtSet.addInsert("MySink1", table1);
 
 Table table2 = table1.unionAll(tEnv.from("MySource2"));
-table2.insertInto("MySink2");
+stmtSet.addInsert("MySink2", table2);
 
-String explanation = tEnv.explain(false);
+String explanation = stmtSet.explain();
 System.out.println(explanation);
 
 {% endhighlight %}
@@ -1673,30 +1587,32 @@ val schema = new Schema()
     .field("count", DataTypes.INT())
     .field("word", DataTypes.STRING())
 
-tEnv.connect(new FileSystem("/source/path1"))
+tEnv.connect(new FileSystem().path("/source/path1"))
     .withFormat(new Csv().deriveSchema())
     .withSchema(schema)
     .createTemporaryTable("MySource1")
-tEnv.connect(new FileSystem("/source/path2"))
+tEnv.connect(new FileSystem().path("/source/path2"))
     .withFormat(new Csv().deriveSchema())
     .withSchema(schema)
     .createTemporaryTable("MySource2")
-tEnv.connect(new FileSystem("/sink/path1"))
+tEnv.connect(new FileSystem().path("/sink/path1"))
     .withFormat(new Csv().deriveSchema())
     .withSchema(schema)
     .createTemporaryTable("MySink1")
-tEnv.connect(new FileSystem("/sink/path2"))
+tEnv.connect(new FileSystem().path("/sink/path2"))
     .withFormat(new Csv().deriveSchema())
     .withSchema(schema)
     .createTemporaryTable("MySink2")
+    
+val stmtSet = tEnv.createStatementSet()
 
 val table1 = tEnv.from("MySource1").where($"word".like("F%"))
-table1.insertInto("MySink1")
+stmtSet.addInsert("MySink1", table1)
 
 val table2 = table1.unionAll(tEnv.from("MySource2"))
-table2.insertInto("MySink2")
+stmtSet.addInsert("MySink2", table2)
 
-val explanation = tEnv.explain(false)
+val explanation = stmtSet.explain()
 println(explanation)
 
 {% endhighlight %}
@@ -1727,15 +1643,18 @@ t_env.connect(FileSystem().path("/sink/path2")))
     .with_format(Csv().deriveSchema())
     .with_schema(schema)
     .create_temporary_table("MySink2")
+    
+stmt_set = t_env.create_statement_set()
 
-table1 = t_env.from_path("MySource1").where("LIKE(word, 'F%')")
-table1.insert_into("MySink1")
+table1 = t_env.from_path("MySource1").where(col('word').like('F%'))
+stmt_set.add_insert("MySink1", table1)
 
 table2 = table1.union_all(t_env.from_path("MySource2"))
-table2.insert_into("MySink2")
+stmt_set.add_insert("MySink2", table2)
 
-explanation = t_env.explain()
+explanation = stmt_set.explain()
 print(explanation)
+
 {% endhighlight %}
 </div>
 </div>

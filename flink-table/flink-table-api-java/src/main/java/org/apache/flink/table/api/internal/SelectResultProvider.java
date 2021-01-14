@@ -21,8 +21,7 @@ package org.apache.flink.table.api.internal;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.types.Row;
-
-import java.util.Iterator;
+import org.apache.flink.util.CloseableIterator;
 
 /**
  * An internal class which helps the client to get the execute result from a specific sink.
@@ -31,13 +30,9 @@ import java.util.Iterator;
  */
 @Internal
 public interface SelectResultProvider {
-	/**
-	 * Set the job client associated with the select job to retrieve the result.
-	 */
-	void setJobClient(JobClient jobClient);
+    /** Set the job client associated with the select job to retrieve the result. */
+    void setJobClient(JobClient jobClient);
 
-	/**
-	 * Returns the select result as row iterator.
-	 */
-	Iterator<Row> getResultIterator();
+    /** Returns the select result as row iterator. */
+    CloseableIterator<Row> getResultIterator();
 }

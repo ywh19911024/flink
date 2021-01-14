@@ -20,28 +20,40 @@ package org.apache.flink.table.filesystem;
 
 import org.apache.flink.table.filesystem.TableMetaStoreFactory.TableMetaStore;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.LinkedHashMap;
 
 /**
  * Partition commit policy to update metastore.
  *
- * <p>If this is for file system table, the metastore is a empty implemantation.
- * If this is for hive table, the metastore is for connecting to hive metastore.
+ * <p>If this is for file system table, the metastore is a empty implemantation. If this is for hive
+ * table, the metastore is for connecting to hive metastore.
  */
 public class MetastoreCommitPolicy implements PartitionCommitPolicy {
 
-	private TableMetaStore metaStore;
+    private static final Logger LOG = LoggerFactory.getLogger(MetastoreCommitPolicy.class);
 
-	public void setMetastore(TableMetaStore metaStore) {
-		this.metaStore = metaStore;
-	}
+    private TableMetaStore metaStore;
 
-	@Override
-	public void commit(Context context) throws Exception {
-		LinkedHashMap<String, String> partitionSpec = new LinkedHashMap<>();
-		for (int i = 0; i < context.partitionKeys().size(); i++) {
-			partitionSpec.put(context.partitionKeys().get(i), context.partitionValues().get(i));
-		}
-		metaStore.createOrAlterPartition(partitionSpec, context.partitionPath());
-	}
+    public void setMetastore(TableMetaStore metaStore) {
+        this.metaStore = metaStore;
+    }
+
+    @Override
+    public void commit(Context context) throws Exception {
+        LinkedHashMap<String, String> partitionSpec = context.partitionSpec();
+        metaStore
+                .getPartition(partitionSpec)
+                .ifPresent(
+                        path ->
+                                LOG.warn(
+                                        "The partition {} has existed before current commit,"
+                                                + " the path is {}, this partition will be altered instead of being created",
+                                        partitionSpec,
+                                        path));
+        metaStore.createOrAlterPartition(partitionSpec, context.partitionPath());
+        LOG.info("Committed partition {} to metastore", partitionSpec);
+    }
 }

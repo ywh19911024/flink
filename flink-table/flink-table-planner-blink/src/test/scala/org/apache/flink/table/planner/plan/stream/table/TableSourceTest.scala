@@ -21,7 +21,7 @@ package org.apache.flink.table.planner.plan.stream.table
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.{Ignore, Test}
+import org.junit.Test
 
 class TableSourceTest extends TableTestBase {
 
@@ -45,10 +45,9 @@ class TableSourceTest extends TableTestBase {
     util.tableEnv.executeSql(ddl)
 
     val t = util.tableEnv.from("rowTimeT").select($"rowtime", $"id", $"name", $"val")
-    util.verifyPlan(t)
+    util.verifyExecPlan(t)
   }
 
-  @Ignore("remove ignore once FLINK-17753 is fixed")
   @Test
   def testRowTimeTableSourceGroupWindow(): Unit = {
     val ddl =
@@ -71,19 +70,19 @@ class TableSourceTest extends TableTestBase {
       .window(Tumble over 10.minutes on 'rowtime as 'w)
       .groupBy('name, 'w)
       .select('name, 'w.end, 'val.avg)
-    util.verifyPlan(t)
+    util.verifyExecPlan(t)
   }
 
   @Test
-  def testProcTimeTableSourceSimple(): Unit = {
+  def testRowTimeTableSourceGroupWindowWithNotNullRowTimeType(): Unit = {
     val ddl =
       s"""
-         |CREATE TABLE procTimeT (
+         |CREATE TABLE rowTimeT (
          |  id int,
+         |  rowtime timestamp(3) not null,
          |  val bigint,
          |  name varchar(32),
-         |  proctime as PROCTIME(),
-         |  watermark for proctime as proctime
+         |  watermark for rowtime as rowtime - INTERVAL '5' SECONDS
          |) WITH (
          |  'connector' = 'values',
          |  'bounded' = 'false'
@@ -91,8 +90,12 @@ class TableSourceTest extends TableTestBase {
        """.stripMargin
     util.tableEnv.executeSql(ddl)
 
-    val t = util.tableEnv.from("procTimeT").select($"proctime", $"id", $"name", $"val")
-    util.verifyPlan(t)
+    val t = util.tableEnv.from("rowTimeT")
+      .where($"val" > 100)
+      .window(Tumble over 10.minutes on 'rowtime as 'w)
+      .groupBy('name, 'w)
+      .select('name, 'w.end, 'val.avg)
+    util.verifyExecPlan(t)
   }
 
   @Test
@@ -115,29 +118,7 @@ class TableSourceTest extends TableTestBase {
       .window(Over partitionBy 'id orderBy 'proctime preceding 2.hours as 'w)
       .select('id, 'name, 'val.sum over 'w as 'valSum)
       .filter('valSum > 100)
-    util.verifyPlan(t)
-  }
-
-  @Test
-  def testProjectWithRowtimeProctime(): Unit = {
-    val ddl =
-      s"""
-         |CREATE TABLE T (
-         |  id int,
-         |  rtime timestamp(3),
-         |  val bigint,
-         |  name varchar(32),
-         |  ptime as PROCTIME(),
-         |  watermark for ptime as ptime
-         |) WITH (
-         |  'connector' = 'values',
-         |  'bounded' = 'false'
-         |)
-       """.stripMargin
-    util.tableEnv.executeSql(ddl)
-
-    val t = util.tableEnv.from("T").select('name, 'val, 'id)
-    util.verifyPlan(t)
+    util.verifyExecPlan(t)
   }
 
   @Test
@@ -159,9 +140,10 @@ class TableSourceTest extends TableTestBase {
     util.tableEnv.executeSql(ddl)
 
     val t = util.tableEnv.from("T").select('ptime, 'name, 'val, 'id)
-    util.verifyPlan(t)
+    util.verifyExecPlan(t)
   }
 
+  @Test
   def testProjectWithoutProctime(): Unit = {
     val ddl =
       s"""
@@ -180,10 +162,14 @@ class TableSourceTest extends TableTestBase {
     util.tableEnv.executeSql(ddl)
 
     val t = util.tableEnv.from("T").select('name, 'val, 'rtime, 'id)
-    util.verifyPlan(t)
+    util.verifyExecPlan(t)
   }
 
-  def testProjectOnlyProctime(): Unit = {
+  @Test
+  def testProctimeOnWatermarkSpec(): Unit = {
+    thrown.expect(classOf[TableException])
+    thrown.expectMessage("Watermark can not be defined for a processing time attribute column.")
+
     val ddl =
       s"""
          |CREATE TABLE T (
@@ -201,9 +187,10 @@ class TableSourceTest extends TableTestBase {
     util.tableEnv.executeSql(ddl)
 
     val t = util.tableEnv.from("T").select('ptime)
-    util.verifyPlan(t)
+    util.verifyExecPlan(t)
   }
 
+  @Test
   def testProjectOnlyRowtime(): Unit = {
     val ddl =
       s"""
@@ -222,7 +209,7 @@ class TableSourceTest extends TableTestBase {
     util.tableEnv.executeSql(ddl)
 
     val t = util.tableEnv.from("T").select('rtime)
-    util.verifyPlan(t)
+    util.verifyExecPlan(t)
   }
 
   @Test
@@ -250,7 +237,7 @@ class TableSourceTest extends TableTestBase {
         'nested.get("value") as 'nestedValue,
         'deepNested.get("nested2").get("flag") as 'nestedFlag,
         'deepNested.get("nested2").get("num") as 'nestedNum)
-    util.verifyPlan(t)
+    util.verifyExecPlan(t)
   }
 
 }

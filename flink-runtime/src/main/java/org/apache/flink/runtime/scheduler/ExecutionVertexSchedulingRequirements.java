@@ -22,155 +22,110 @@ import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
 import org.apache.flink.runtime.instance.SlotSharingGroupId;
-import org.apache.flink.runtime.jobmanager.scheduler.CoLocationConstraint;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
-import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
 
 import javax.annotation.Nullable;
-
-import java.util.Collection;
-import java.util.Collections;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
-/**
- * The requirements for scheduling a {@link ExecutionVertex}.
- */
+/** The requirements for scheduling a {@link ExecutionVertex}. */
 public class ExecutionVertexSchedulingRequirements {
 
-	private final ExecutionVertexID executionVertexId;
+    private final ExecutionVertexID executionVertexId;
 
-	@Nullable
-	private final AllocationID previousAllocationId;
+    @Nullable private final AllocationID previousAllocationId;
 
-	private final ResourceProfile taskResourceProfile;
+    private final ResourceProfile taskResourceProfile;
 
-	private final ResourceProfile physicalSlotResourceProfile;
+    private final ResourceProfile physicalSlotResourceProfile;
 
-	@Nullable
-	private final SlotSharingGroupId slotSharingGroupId;
+    private final SlotSharingGroupId slotSharingGroupId;
 
-	@Nullable
-	private final CoLocationConstraint coLocationConstraint;
+    private ExecutionVertexSchedulingRequirements(
+            ExecutionVertexID executionVertexId,
+            @Nullable AllocationID previousAllocationId,
+            ResourceProfile taskResourceProfile,
+            ResourceProfile physicalSlotResourceProfile,
+            SlotSharingGroupId slotSharingGroupId) {
+        this.executionVertexId = checkNotNull(executionVertexId);
+        this.previousAllocationId = previousAllocationId;
+        this.taskResourceProfile = checkNotNull(taskResourceProfile);
+        this.physicalSlotResourceProfile = checkNotNull(physicalSlotResourceProfile);
+        this.slotSharingGroupId = checkNotNull(slotSharingGroupId);
+    }
 
-	private final Collection<TaskManagerLocation> preferredLocations;
+    public ExecutionVertexID getExecutionVertexId() {
+        return executionVertexId;
+    }
 
-	private ExecutionVertexSchedulingRequirements(
-			ExecutionVertexID executionVertexId,
-			@Nullable AllocationID previousAllocationId,
-			ResourceProfile taskResourceProfile,
-			ResourceProfile physicalSlotResourceProfile,
-			@Nullable SlotSharingGroupId slotSharingGroupId,
-			@Nullable CoLocationConstraint coLocationConstraint,
-			Collection<TaskManagerLocation> preferredLocations) {
-		this.executionVertexId = checkNotNull(executionVertexId);
-		this.previousAllocationId = previousAllocationId;
-		this.taskResourceProfile = checkNotNull(taskResourceProfile);
-		this.physicalSlotResourceProfile = checkNotNull(physicalSlotResourceProfile);
-		this.slotSharingGroupId = slotSharingGroupId;
-		this.coLocationConstraint = coLocationConstraint;
-		this.preferredLocations = checkNotNull(preferredLocations);
-	}
+    @Nullable
+    public AllocationID getPreviousAllocationId() {
+        return previousAllocationId;
+    }
 
-	public ExecutionVertexID getExecutionVertexId() {
-		return executionVertexId;
-	}
+    public ResourceProfile getTaskResourceProfile() {
+        return taskResourceProfile;
+    }
 
-	@Nullable
-	public AllocationID getPreviousAllocationId() {
-		return previousAllocationId;
-	}
+    public ResourceProfile getPhysicalSlotResourceProfile() {
+        return physicalSlotResourceProfile;
+    }
 
-	public ResourceProfile getTaskResourceProfile() {
-		return taskResourceProfile;
-	}
+    public SlotSharingGroupId getSlotSharingGroupId() {
+        return slotSharingGroupId;
+    }
 
-	public ResourceProfile getPhysicalSlotResourceProfile() {
-		return physicalSlotResourceProfile;
-	}
+    /** Builder for {@link ExecutionVertexSchedulingRequirements}. */
+    public static class Builder {
 
-	@Nullable
-	public SlotSharingGroupId getSlotSharingGroupId() {
-		return slotSharingGroupId;
-	}
+        private ExecutionVertexID executionVertexId;
 
-	@Nullable
-	public CoLocationConstraint getCoLocationConstraint() {
-		return coLocationConstraint;
-	}
+        private AllocationID previousAllocationId;
 
-	public Collection<TaskManagerLocation> getPreferredLocations() {
-		return preferredLocations;
-	}
+        private ResourceProfile taskResourceProfile = ResourceProfile.UNKNOWN;
 
-	/**
-	 * Builder for {@link ExecutionVertexSchedulingRequirements}.
-	 */
-	public static class Builder {
+        private ResourceProfile physicalSlotResourceProfile = ResourceProfile.UNKNOWN;
 
-		private ExecutionVertexID executionVertexId;
+        private SlotSharingGroupId slotSharingGroupId;
 
-		private AllocationID previousAllocationId;
+        public Builder withExecutionVertexId(final ExecutionVertexID executionVertexId) {
+            this.executionVertexId = executionVertexId;
+            return this;
+        }
 
-		private ResourceProfile taskResourceProfile = ResourceProfile.UNKNOWN;
+        public Builder withPreviousAllocationId(final AllocationID previousAllocationId) {
+            this.previousAllocationId = previousAllocationId;
+            return this;
+        }
 
-		private ResourceProfile physicalSlotResourceProfile = ResourceProfile.UNKNOWN;
+        public Builder withTaskResourceProfile(final ResourceProfile taskResourceProfile) {
+            this.taskResourceProfile = taskResourceProfile;
+            return this;
+        }
 
-		private SlotSharingGroupId slotSharingGroupId;
+        public Builder withPhysicalSlotResourceProfile(
+                final ResourceProfile physicalSlotResourceProfile) {
+            this.physicalSlotResourceProfile = physicalSlotResourceProfile;
+            return this;
+        }
 
-		private CoLocationConstraint coLocationConstraint;
+        public Builder withSlotSharingGroupId(final SlotSharingGroupId slotSharingGroupId) {
+            this.slotSharingGroupId = slotSharingGroupId;
+            return this;
+        }
 
-		private Collection<TaskManagerLocation> preferredLocations = Collections.emptyList();
+        public ExecutionVertexSchedulingRequirements build() {
+            checkState(
+                    physicalSlotResourceProfile.allFieldsNoLessThan(taskResourceProfile),
+                    "The physical slot resources must fulfill the task slot requirements");
 
-		public Builder withExecutionVertexId(final ExecutionVertexID executionVertexId) {
-			this.executionVertexId = executionVertexId;
-			return this;
-		}
-
-		public Builder withPreviousAllocationId(final AllocationID previousAllocationId) {
-			this.previousAllocationId = previousAllocationId;
-			return this;
-		}
-
-		public Builder withTaskResourceProfile(final ResourceProfile taskResourceProfile) {
-			this.taskResourceProfile = taskResourceProfile;
-			return this;
-		}
-
-		public Builder withPhysicalSlotResourceProfile(final ResourceProfile physicalSlotResourceProfile) {
-			this.physicalSlotResourceProfile = physicalSlotResourceProfile;
-			return this;
-		}
-
-		public Builder withSlotSharingGroupId(final SlotSharingGroupId slotSharingGroupId) {
-			this.slotSharingGroupId = slotSharingGroupId;
-			return this;
-		}
-
-		public Builder withCoLocationConstraint(final CoLocationConstraint coLocationConstraint) {
-			this.coLocationConstraint = coLocationConstraint;
-			return this;
-		}
-
-		public Builder withPreferredLocations(final Collection<TaskManagerLocation> preferredLocations) {
-			this.preferredLocations = preferredLocations;
-			return this;
-		}
-
-		public ExecutionVertexSchedulingRequirements build() {
-			checkState(
-				physicalSlotResourceProfile.isMatching(taskResourceProfile),
-				"The physical slot resources must fulfill the task slot requirements");
-
-			return new ExecutionVertexSchedulingRequirements(
-				executionVertexId,
-				previousAllocationId,
-				taskResourceProfile,
-				physicalSlotResourceProfile,
-				slotSharingGroupId,
-				coLocationConstraint,
-				preferredLocations);
-		}
-	}
+            return new ExecutionVertexSchedulingRequirements(
+                    executionVertexId,
+                    previousAllocationId,
+                    taskResourceProfile,
+                    physicalSlotResourceProfile,
+                    slotSharingGroupId);
+        }
+    }
 }

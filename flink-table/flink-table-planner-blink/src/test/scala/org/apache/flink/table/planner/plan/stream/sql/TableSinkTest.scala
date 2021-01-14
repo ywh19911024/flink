@@ -21,7 +21,6 @@ package org.apache.flink.table.planner.plan.stream.sql
 import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.planner.utils.TableTestBase
-import org.apache.flink.table.types.logical.LogicalType
 
 import org.junit.Test
 
@@ -30,9 +29,24 @@ class TableSinkTest extends TableTestBase {
   private val util = streamTestUtil()
   util.addDataStream[(Int, Long, String)]("MyTable", 'a, 'b, 'c)
 
-  val STRING: LogicalType = DataTypes.STRING().getLogicalType
-  val LONG: LogicalType = DataTypes.BIGINT().getLogicalType
-  val INT: LogicalType = DataTypes.INT().getLogicalType
+  @Test
+  def testInsertMismatchTypeForEmptyChar(): Unit = {
+    util.addTable(
+      s"""
+         |CREATE TABLE my_sink (
+         |  name STRING,
+         |  email STRING,
+         |  message_offset BIGINT
+         |) WITH (
+         |  'connector' = 'values'
+         |)
+         |""".stripMargin)
+    thrown.expect(classOf[ValidationException])
+    thrown.expectMessage(
+      "Query schema: [a: INT, EXPR$1: CHAR(0) NOT NULL, EXPR$2: CHAR(0) NOT NULL]\n" +
+      "Sink schema:  [name: STRING, email: STRING, message_offset: BIGINT]")
+    util.verifyExecPlanInsert("INSERT INTO my_sink SELECT a, '', '' FROM MyTable")
+  }
 
   @Test
   def testExceptionForAppendSink(): Unit = {
@@ -53,7 +67,7 @@ class TableSinkTest extends TableTestBase {
     thrown.expectMessage("Table sink 'default_catalog.default_database.appendSink' doesn't " +
       "support consuming update changes which is produced by node " +
       "GroupAggregate(groupBy=[a], select=[a, COUNT(*) AS cnt])")
-    util.verifyPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -88,7 +102,7 @@ class TableSinkTest extends TableTestBase {
     thrown.expect(classOf[TableException])
     thrown.expectMessage("OverAggregate doesn't support consuming update changes " +
       "which is produced by node GroupAggregate(groupBy=[a], select=[a, COUNT(*) AS cnt])")
-    util.verifyPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -105,7 +119,7 @@ class TableSinkTest extends TableTestBase {
          |""".stripMargin)
     val stmtSet = util.tableEnv.createStatementSet()
     stmtSet.addInsertSql("INSERT INTO appendSink SELECT a + b, c FROM MyTable")
-    util.verifyPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -123,7 +137,7 @@ class TableSinkTest extends TableTestBase {
     val stmtSet = util.tableEnv.createStatementSet()
     stmtSet.addInsertSql(
       "INSERT INTO retractSink SELECT a, COUNT(*) AS cnt FROM MyTable GROUP BY a")
-    util.verifyPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -147,7 +161,7 @@ class TableSinkTest extends TableTestBase {
       """.stripMargin
     val stmtSet = util.tableEnv.createStatementSet()
     stmtSet.addInsertSql(dml)
-    util.verifyPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -166,7 +180,7 @@ class TableSinkTest extends TableTestBase {
     val stmtSet = util.tableEnv.createStatementSet()
     stmtSet.addInsertSql(
       "INSERT INTO upsertSink SELECT a, COUNT(*) AS cnt FROM MyTable GROUP BY a")
-    util.verifyPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -192,7 +206,7 @@ class TableSinkTest extends TableTestBase {
     val stmtSet = util.tableEnv.createStatementSet()
     stmtSet.addInsertSql(sql)
     // a filter after aggregation, the Aggregation and Calc should produce UPDATE_BEFORE
-    util.verifyPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -231,7 +245,7 @@ class TableSinkTest extends TableTestBase {
       "INSERT INTO upsertSink " +
         "SELECT cnt, COUNT(b) AS frequency FROM TempTable WHERE b < 4 GROUP BY cnt")
 
-    util.verifyPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -284,7 +298,104 @@ class TableSinkTest extends TableTestBase {
     stmtSet.addInsertSql(
       "INSERT INTO upsertSink SELECT a, MIN(b) AS total_min FROM TempTable1 GROUP BY a")
 
-    util.verifyPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
+    util.verifyRelPlan(stmtSet, ExplainDetail.CHANGELOG_MODE)
   }
 
+  @Test
+  def testExceptionForWritingVirtualMetadataColumn(): Unit = {
+    // test reordering, skipping, casting of (virtual) metadata columns
+    util.addTable(
+      s"""
+         |CREATE TABLE MetadataTable (
+         |  `a` INT,
+         |  `m_3` INT METADATA FROM 'metadata_3' VIRTUAL,
+         |  `m_2` INT METADATA FROM 'metadata_2',
+         |  `b` BIGINT,
+         |  `c` INT,
+         |  `metadata_1` STRING METADATA
+         |) WITH (
+         |  'connector' = 'values',
+         |  'readable-metadata' = 'metadata_1:STRING, metadata_2:BIGINT, metadata_3:BIGINT',
+         |  'writable-metadata' = 'metadata_1:STRING, metadata_2:BIGINT'
+         |)
+       """.stripMargin)
+
+    val sql =
+      """
+        |INSERT INTO MetadataTable
+        |SELECT *
+        |FROM MetadataTable
+        |""".stripMargin
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql(sql)
+
+    thrown.expect(classOf[ValidationException])
+    thrown.expectMessage(
+      "Query schema: [a: INT, m_3: INT, m_2: INT, b: BIGINT, c: INT, metadata_1: STRING]\n" +
+      "Sink schema:  [a: INT, m_2: INT, b: BIGINT, c: INT, metadata_1: STRING]")
+
+    util.verifyRelPlan(stmtSet)
+  }
+
+  @Test
+  def testExceptionForWritingInvalidMetadataColumn(): Unit = {
+    // test casting of metadata columns
+    util.addTable(
+      s"""
+         |CREATE TABLE MetadataTable (
+         |  `a` INT,
+         |  `metadata_1` TIMESTAMP(3) METADATA
+         |) WITH (
+         |  'connector' = 'values',
+         |  'writable-metadata' = 'metadata_1:BOOLEAN'
+         |)
+       """.stripMargin)
+
+    val sql =
+      """
+        |INSERT INTO MetadataTable
+        |SELECT TIMESTAMP '1990-10-14 06:00:00.000'
+        |""".stripMargin
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql(sql)
+
+    thrown.expect(classOf[ValidationException])
+    thrown.expectMessage(
+      "Invalid data type for metadata column 'metadata_1' of table " +
+      "'default_catalog.default_database.MetadataTable'. The column cannot be declared as " +
+      "'TIMESTAMP(3)' because the type must be castable to metadata type 'BOOLEAN'.")
+
+    util.verifyRelPlan(stmtSet)
+  }
+
+  @Test
+  def testMetadataColumn(): Unit = {
+    // test reordering, skipping, casting of (virtual) metadata columns
+    util.addTable(
+      s"""
+         |CREATE TABLE MetadataTable (
+         |  `a` INT,
+         |  `m_3` INT METADATA FROM 'metadata_3' VIRTUAL,
+         |  `m_2` INT METADATA FROM 'metadata_2',
+         |  `b` BIGINT,
+         |  `c` INT,
+         |  `metadata_1` STRING METADATA
+         |) WITH (
+         |  'connector' = 'values',
+         |  'readable-metadata' = 'metadata_1:STRING, metadata_2:BIGINT, metadata_3:BIGINT',
+         |  'writable-metadata' = 'metadata_1:STRING, metadata_2:BIGINT'
+         |)
+       """.stripMargin)
+
+    val sql =
+      """
+        |INSERT INTO MetadataTable
+        |SELECT `a`, `m_2`, `b`, `c`, `metadata_1`
+        |FROM MetadataTable
+        |""".stripMargin
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql(sql)
+
+    util.verifyRelPlan(stmtSet)
+  }
 }

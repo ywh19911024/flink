@@ -18,12 +18,23 @@
 
 package org.apache.flink.streaming.runtime.tasks;
 
+import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
+import org.apache.flink.api.common.typeutils.base.StringSerializer;
+import org.apache.flink.core.fs.CloseableRegistry;
 import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
-import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
+import org.apache.flink.runtime.checkpoint.CheckpointMetricsBuilder;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
+import org.apache.flink.runtime.checkpoint.CheckpointType;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriterImpl;
+import org.apache.flink.runtime.event.AbstractEvent;
+import org.apache.flink.runtime.io.network.api.CancelCheckpointMarker;
 import org.apache.flink.runtime.io.network.api.writer.NonRecordWriter;
+import org.apache.flink.runtime.io.network.api.writer.RecordOrEventCollectingResultPartitionWriter;
+import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.testutils.DummyEnvironment;
 import org.apache.flink.runtime.operators.testutils.MockEnvironment;
@@ -32,13 +43,17 @@ import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.DoneFuture;
 import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.SnapshotResult;
+import org.apache.flink.runtime.state.TestCheckpointStorageWorkerView;
 import org.apache.flink.runtime.state.TestTaskStateManager;
+import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.OperatorSnapshotFutures;
+import org.apache.flink.streaming.api.operators.StreamMap;
 import org.apache.flink.streaming.api.operators.StreamTaskStateInitializer;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
+import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.StreamTaskTest.NoOpStreamTask;
 import org.apache.flink.streaming.util.MockStreamTaskBuilder;
@@ -46,331 +61,508 @@ import org.apache.flink.util.ExceptionUtils;
 
 import org.junit.Test;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RunnableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.apache.flink.runtime.checkpoint.CheckpointType.CHECKPOINT;
 import static org.apache.flink.runtime.checkpoint.CheckpointType.SAVEPOINT;
+import static org.apache.flink.shaded.guava18.com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-/**
- * Tests for {@link SubtaskCheckpointCoordinator}.
- */
+/** Tests for {@link SubtaskCheckpointCoordinator}. */
 public class SubtaskCheckpointCoordinatorTest {
 
-	@Test
-	public void testNotifyCheckpointComplete() throws Exception {
-		TestTaskStateManager stateManager = new TestTaskStateManager();
-		MockEnvironment mockEnvironment = MockEnvironment.builder().setTaskStateManager(stateManager).build();
-		SubtaskCheckpointCoordinator subtaskCheckpointCoordinator = new MockSubtaskCheckpointCoordinatorBuilder()
-			.setEnvironment(mockEnvironment)
-			.build();
+    @Test
+    public void testInitCheckpoint() throws IOException {
+        assertTrue(initCheckpoint(true, CHECKPOINT));
+        assertFalse(initCheckpoint(false, CHECKPOINT));
+        assertFalse(initCheckpoint(false, SAVEPOINT));
+    }
 
-		final OperatorChain<?, ?> operatorChain = getOperatorChain(mockEnvironment);
+    private boolean initCheckpoint(
+            boolean unalignedCheckpointEnabled, CheckpointType checkpointType) throws IOException {
+        class MockWriter extends ChannelStateWriterImpl.NoOpChannelStateWriter {
+            private boolean started;
 
-		long checkpointId = 42L;
-		{
-			subtaskCheckpointCoordinator.notifyCheckpointComplete(checkpointId, operatorChain, () -> true);
-			assertEquals(checkpointId, stateManager.getNotifiedCompletedCheckpointId());
-		}
+            @Override
+            public void start(long checkpointId, CheckpointOptions checkpointOptions) {
+                started = true;
+            }
+        }
 
-		long newCheckpointId = checkpointId + 1;
-		{
-			subtaskCheckpointCoordinator.notifyCheckpointComplete(newCheckpointId, operatorChain, () -> false);
-			// even task is not running, state manager could still receive the notification.
-			assertEquals(newCheckpointId, stateManager.getNotifiedCompletedCheckpointId());
-		}
-	}
+        MockWriter writer = new MockWriter();
+        SubtaskCheckpointCoordinator coordinator = coordinator(unalignedCheckpointEnabled, writer);
+        CheckpointStorageLocationReference locationReference =
+                CheckpointStorageLocationReference.getDefault();
+        coordinator.initCheckpoint(
+                1L,
+                unalignedCheckpointEnabled
+                        ? CheckpointOptions.unaligned(locationReference)
+                        : CheckpointOptions.alignedNoTimeout(checkpointType, locationReference));
+        return writer.started;
+    }
 
-	@Test
-	public void testSkipChannelStateForSavepoints() throws Exception {
-		SubtaskCheckpointCoordinator coordinator = new MockSubtaskCheckpointCoordinatorBuilder()
-			.setUnalignedCheckpointEnabled(false)
-			.setPrepareInputSnapshot((u1, u2) -> {
-				fail("should not prepare input snapshot for savepoint");
-				return null;
-			}).build();
+    @Test
+    public void testNotifyCheckpointComplete() throws Exception {
+        TestTaskStateManager stateManager = new TestTaskStateManager();
+        MockEnvironment mockEnvironment =
+                MockEnvironment.builder().setTaskStateManager(stateManager).build();
+        SubtaskCheckpointCoordinator subtaskCheckpointCoordinator =
+                new MockSubtaskCheckpointCoordinatorBuilder()
+                        .setEnvironment(mockEnvironment)
+                        .build();
 
-		coordinator.checkpointState(
-			new CheckpointMetaData(0, 0),
-			new CheckpointOptions(SAVEPOINT, CheckpointStorageLocationReference.getDefault()),
-			new CheckpointMetrics(),
-			new OperatorChain<>(new NoOpStreamTask<>(new DummyEnvironment()), new NonRecordWriter<>()),
-			() -> false);
-	}
+        final OperatorChain<?, ?> operatorChain = getOperatorChain(mockEnvironment);
 
-	@Test
-	public void testNotifyCheckpointAbortedManyTimes() throws Exception {
-		MockEnvironment mockEnvironment = MockEnvironment.builder().build();
-		int maxRecordAbortedCheckpoints = 256;
-		SubtaskCheckpointCoordinatorImpl subtaskCheckpointCoordinator = (SubtaskCheckpointCoordinatorImpl) new MockSubtaskCheckpointCoordinatorBuilder()
-			.setEnvironment(mockEnvironment)
-			.setMaxRecordAbortedCheckpoints(maxRecordAbortedCheckpoints)
-			.build();
+        long checkpointId = 42L;
+        {
+            subtaskCheckpointCoordinator.notifyCheckpointComplete(
+                    checkpointId, operatorChain, () -> true);
+            assertEquals(checkpointId, stateManager.getNotifiedCompletedCheckpointId());
+        }
 
-		final OperatorChain<?, ?> operatorChain = getOperatorChain(mockEnvironment);
+        long newCheckpointId = checkpointId + 1;
+        {
+            subtaskCheckpointCoordinator.notifyCheckpointComplete(
+                    newCheckpointId, operatorChain, () -> false);
+            // even task is not running, state manager could still receive the notification.
+            assertEquals(newCheckpointId, stateManager.getNotifiedCompletedCheckpointId());
+        }
+    }
 
-		long notifyAbortedTimes = maxRecordAbortedCheckpoints + 42;
-		for (int i = 1; i < notifyAbortedTimes; i++) {
-			subtaskCheckpointCoordinator.notifyCheckpointAborted(i, operatorChain, () -> true);
-			assertEquals(Math.min(maxRecordAbortedCheckpoints, i), subtaskCheckpointCoordinator.getAbortedCheckpointSize());
-		}
-	}
+    @Test
+    public void testSavepointNotResultingInPriorityEvents() throws Exception {
+        MockEnvironment mockEnvironment = MockEnvironment.builder().build();
 
-	@Test
-	public void testNotifyCheckpointAbortedBeforeAsyncPhase() throws Exception {
-		TestTaskStateManager stateManager = new TestTaskStateManager();
-		MockEnvironment mockEnvironment = MockEnvironment.builder().setTaskStateManager(stateManager).build();
-		SubtaskCheckpointCoordinatorImpl subtaskCheckpointCoordinator = (SubtaskCheckpointCoordinatorImpl) new MockSubtaskCheckpointCoordinatorBuilder()
-			.setEnvironment(mockEnvironment)
-			.setUnalignedCheckpointEnabled(true)
-			.build();
+        SubtaskCheckpointCoordinator coordinator =
+                new MockSubtaskCheckpointCoordinatorBuilder()
+                        .setUnalignedCheckpointEnabled(true)
+                        .setEnvironment(mockEnvironment)
+                        .build();
 
-		CheckpointOperator checkpointOperator = new CheckpointOperator(new OperatorSnapshotFutures());
+        AtomicReference<Boolean> broadcastedPriorityEvent = new AtomicReference<>(null);
+        final OperatorChain<?, ?> operatorChain =
+                new OperatorChain(
+                        new MockStreamTaskBuilder(mockEnvironment).build(),
+                        new NonRecordWriter<>()) {
+                    @Override
+                    public void broadcastEvent(AbstractEvent event, boolean isPriorityEvent)
+                            throws IOException {
+                        super.broadcastEvent(event, isPriorityEvent);
+                        broadcastedPriorityEvent.set(isPriorityEvent);
+                    }
+                };
 
-		final OperatorChain<String, AbstractStreamOperator<String>> operatorChain = operatorChain(checkpointOperator);
+        coordinator.checkpointState(
+                new CheckpointMetaData(0, 0),
+                new CheckpointOptions(SAVEPOINT, CheckpointStorageLocationReference.getDefault()),
+                new CheckpointMetricsBuilder(),
+                operatorChain,
+                () -> false);
 
-		long checkpointId = 42L;
-		// notify checkpoint aborted before execution.
-		subtaskCheckpointCoordinator.notifyCheckpointAborted(checkpointId, operatorChain, () -> true);
-		assertEquals(1, subtaskCheckpointCoordinator.getAbortedCheckpointSize());
+        assertEquals(false, broadcastedPriorityEvent.get());
+    }
 
-		subtaskCheckpointCoordinator.getChannelStateWriter().start(checkpointId, CheckpointOptions.forCheckpointWithDefaultLocation());
-		subtaskCheckpointCoordinator.checkpointState(
-			new CheckpointMetaData(checkpointId, System.currentTimeMillis()),
-			CheckpointOptions.forCheckpointWithDefaultLocation(),
-			new CheckpointMetrics(),
-			operatorChain,
-			() -> true);
-		assertFalse(checkpointOperator.isCheckpointed());
-		assertEquals(-1, stateManager.getReportedCheckpointId());
-		assertEquals(0, subtaskCheckpointCoordinator.getAbortedCheckpointSize());
-		assertEquals(0, subtaskCheckpointCoordinator.getAsyncCheckpointRunnableSize());
-	}
+    @Test
+    public void testSkipChannelStateForSavepoints() throws Exception {
+        SubtaskCheckpointCoordinator coordinator =
+                new MockSubtaskCheckpointCoordinatorBuilder()
+                        .setUnalignedCheckpointEnabled(true)
+                        .setPrepareInputSnapshot(
+                                (u1, u2) -> {
+                                    fail("should not prepare input snapshot for savepoint");
+                                    return null;
+                                })
+                        .build();
 
-	@Test
-	public void testNotifyCheckpointAbortedDuringAsyncPhase() throws Exception {
-		MockEnvironment mockEnvironment = MockEnvironment.builder().build();
-		SubtaskCheckpointCoordinatorImpl subtaskCheckpointCoordinator = (SubtaskCheckpointCoordinatorImpl) new MockSubtaskCheckpointCoordinatorBuilder()
-			.setEnvironment(mockEnvironment)
-			.setExecutor(Executors.newSingleThreadExecutor())
-			.setUnalignedCheckpointEnabled(true)
-			.build();
+        coordinator.checkpointState(
+                new CheckpointMetaData(0, 0),
+                new CheckpointOptions(SAVEPOINT, CheckpointStorageLocationReference.getDefault()),
+                new CheckpointMetricsBuilder(),
+                new OperatorChain<>(
+                        new NoOpStreamTask<>(new DummyEnvironment()), new NonRecordWriter<>()),
+                () -> false);
+    }
 
-		final BlockingRunnableFuture rawKeyedStateHandleFuture = new BlockingRunnableFuture();
-		OperatorSnapshotFutures operatorSnapshotResult = new OperatorSnapshotFutures(
-			DoneFuture.of(SnapshotResult.empty()),
-			rawKeyedStateHandleFuture,
-			DoneFuture.of(SnapshotResult.empty()),
-			DoneFuture.of(SnapshotResult.empty()),
-			DoneFuture.of(SnapshotResult.empty()),
-			DoneFuture.of(SnapshotResult.empty()));
+    @Test
+    public void testNotifyCheckpointAbortedManyTimes() throws Exception {
+        MockEnvironment mockEnvironment = MockEnvironment.builder().build();
+        int maxRecordAbortedCheckpoints = 256;
+        SubtaskCheckpointCoordinatorImpl subtaskCheckpointCoordinator =
+                (SubtaskCheckpointCoordinatorImpl)
+                        new MockSubtaskCheckpointCoordinatorBuilder()
+                                .setEnvironment(mockEnvironment)
+                                .setMaxRecordAbortedCheckpoints(maxRecordAbortedCheckpoints)
+                                .build();
 
-		final OperatorChain<String, AbstractStreamOperator<String>> operatorChain = operatorChain(new CheckpointOperator(operatorSnapshotResult));
+        final OperatorChain<?, ?> operatorChain = getOperatorChain(mockEnvironment);
 
-		long checkpointId = 42L;
-		subtaskCheckpointCoordinator.getChannelStateWriter().start(checkpointId, CheckpointOptions.forCheckpointWithDefaultLocation());
-		subtaskCheckpointCoordinator.checkpointState(
-			new CheckpointMetaData(checkpointId, System.currentTimeMillis()),
-			CheckpointOptions.forCheckpointWithDefaultLocation(),
-			new CheckpointMetrics(),
-			operatorChain,
-			() -> true);
-		rawKeyedStateHandleFuture.awaitRun();
-		assertEquals(1, subtaskCheckpointCoordinator.getAsyncCheckpointRunnableSize());
-		assertFalse(rawKeyedStateHandleFuture.isCancelled());
+        long notifyAbortedTimes = maxRecordAbortedCheckpoints + 42;
+        for (int i = 1; i < notifyAbortedTimes; i++) {
+            subtaskCheckpointCoordinator.notifyCheckpointAborted(i, operatorChain, () -> true);
+            assertEquals(
+                    Math.min(maxRecordAbortedCheckpoints, i),
+                    subtaskCheckpointCoordinator.getAbortedCheckpointSize());
+        }
+    }
 
-		subtaskCheckpointCoordinator.notifyCheckpointAborted(checkpointId, operatorChain, () -> true);
-		assertTrue(rawKeyedStateHandleFuture.isCancelled());
-		assertEquals(0, subtaskCheckpointCoordinator.getAsyncCheckpointRunnableSize());
-	}
+    @Test
+    public void testNotifyCheckpointAbortedBeforeAsyncPhase() throws Exception {
+        TestTaskStateManager stateManager = new TestTaskStateManager();
+        MockEnvironment mockEnvironment =
+                MockEnvironment.builder().setTaskStateManager(stateManager).build();
+        SubtaskCheckpointCoordinatorImpl subtaskCheckpointCoordinator =
+                (SubtaskCheckpointCoordinatorImpl)
+                        new MockSubtaskCheckpointCoordinatorBuilder()
+                                .setEnvironment(mockEnvironment)
+                                .setUnalignedCheckpointEnabled(true)
+                                .build();
 
-	@Test
-	public void testNotifyCheckpointAbortedAfterAsyncPhase() throws Exception {
-		TestTaskStateManager stateManager = new TestTaskStateManager();
-		MockEnvironment mockEnvironment = MockEnvironment.builder().setTaskStateManager(stateManager).build();
-		SubtaskCheckpointCoordinatorImpl subtaskCheckpointCoordinator = (SubtaskCheckpointCoordinatorImpl) new MockSubtaskCheckpointCoordinatorBuilder()
-			.setEnvironment(mockEnvironment)
-			.build();
+        CheckpointOperator checkpointOperator =
+                new CheckpointOperator(new OperatorSnapshotFutures());
 
-		final OperatorChain<?, ?> operatorChain = getOperatorChain(mockEnvironment);
+        final OperatorChain<String, AbstractStreamOperator<String>> operatorChain =
+                operatorChain(checkpointOperator);
 
-		long checkpointId = 42L;
-		subtaskCheckpointCoordinator.checkpointState(
-			new CheckpointMetaData(checkpointId, System.currentTimeMillis()),
-			CheckpointOptions.forCheckpointWithDefaultLocation(),
-			new CheckpointMetrics(),
-			operatorChain,
-			() -> true);
-		subtaskCheckpointCoordinator.notifyCheckpointAborted(checkpointId, operatorChain, () -> true);
-		assertEquals(0, subtaskCheckpointCoordinator.getAbortedCheckpointSize());
-		assertEquals(checkpointId, stateManager.getNotifiedAbortedCheckpointId());
-	}
+        long checkpointId = 42L;
+        // notify checkpoint aborted before execution.
+        subtaskCheckpointCoordinator.notifyCheckpointAborted(
+                checkpointId, operatorChain, () -> true);
+        assertEquals(1, subtaskCheckpointCoordinator.getAbortedCheckpointSize());
 
-	private OperatorChain<?, ?> getOperatorChain(MockEnvironment mockEnvironment) throws Exception {
-		return new OperatorChain<>(
-			new MockStreamTaskBuilder(mockEnvironment).build(),
-			new NonRecordWriter<>());
-	}
+        subtaskCheckpointCoordinator
+                .getChannelStateWriter()
+                .start(checkpointId, CheckpointOptions.forCheckpointWithDefaultLocation());
+        subtaskCheckpointCoordinator.checkpointState(
+                new CheckpointMetaData(checkpointId, System.currentTimeMillis()),
+                CheckpointOptions.forCheckpointWithDefaultLocation(),
+                new CheckpointMetricsBuilder(),
+                operatorChain,
+                () -> true);
+        assertFalse(checkpointOperator.isCheckpointed());
+        assertEquals(-1, stateManager.getReportedCheckpointId());
+        assertEquals(0, subtaskCheckpointCoordinator.getAbortedCheckpointSize());
+        assertEquals(0, subtaskCheckpointCoordinator.getAsyncCheckpointRunnableSize());
+    }
 
-	private <T> OperatorChain<T, AbstractStreamOperator<T>> operatorChain(OneInputStreamOperator<T, T>... streamOperators) throws Exception {
-		return OperatorChainTest.setupOperatorChain(streamOperators);
-	}
+    @Test
+    public void testBroadcastCancelCheckpointMarkerOnAbortingFromCoordinator() throws Exception {
+        OneInputStreamTaskTestHarness<String, String> testHarness =
+                new OneInputStreamTaskTestHarness<>(
+                        OneInputStreamTask::new,
+                        1,
+                        1,
+                        BasicTypeInfo.STRING_TYPE_INFO,
+                        BasicTypeInfo.STRING_TYPE_INFO);
 
-	private static final class BlockingRunnableFuture implements RunnableFuture<SnapshotResult<KeyedStateHandle>> {
+        testHarness.setupOutputForSingletonOperatorChain();
+        StreamConfig streamConfig = testHarness.getStreamConfig();
+        streamConfig.setStreamOperator(new MapOperator());
 
-		private final CompletableFuture<SnapshotResult<KeyedStateHandle>> future = new CompletableFuture<>();
+        testHarness.invoke();
+        testHarness.waitForTaskRunning();
 
-		private final OneShotLatch signalRunLatch = new OneShotLatch();
+        MockEnvironment mockEnvironment = MockEnvironment.builder().build();
+        SubtaskCheckpointCoordinator subtaskCheckpointCoordinator =
+                new MockSubtaskCheckpointCoordinatorBuilder()
+                        .setEnvironment(mockEnvironment)
+                        .build();
 
-		private final CountDownLatch countDownLatch;
+        ArrayList<Object> recordOrEvents = new ArrayList<>();
+        StreamElementSerializer<String> stringStreamElementSerializer =
+                new StreamElementSerializer<>(StringSerializer.INSTANCE);
+        ResultPartitionWriter resultPartitionWriter =
+                new RecordOrEventCollectingResultPartitionWriter<>(
+                        recordOrEvents, stringStreamElementSerializer);
+        mockEnvironment.addOutputs(Collections.singletonList(resultPartitionWriter));
 
-		private final SnapshotResult<KeyedStateHandle> value;
+        OneInputStreamTask<String, String> task = testHarness.getTask();
+        OperatorChain<String, OneInputStreamOperator<String, String>> operatorChain =
+                new OperatorChain<>(
+                        task, StreamTask.createRecordWriterDelegate(streamConfig, mockEnvironment));
+        long checkpointId = 42L;
+        // notify checkpoint aborted before execution.
+        subtaskCheckpointCoordinator.notifyCheckpointAborted(
+                checkpointId, operatorChain, () -> true);
+        subtaskCheckpointCoordinator.checkpointState(
+                new CheckpointMetaData(checkpointId, System.currentTimeMillis()),
+                CheckpointOptions.forCheckpointWithDefaultLocation(),
+                new CheckpointMetricsBuilder(),
+                operatorChain,
+                () -> true);
 
-		private BlockingRunnableFuture() {
-			// count down twice to wait for notify checkpoint aborted to cancel.
-			this.countDownLatch = new CountDownLatch(2);
-			this.value = SnapshotResult.empty();
-		}
+        assertEquals(1, recordOrEvents.size());
+        Object recordOrEvent = recordOrEvents.get(0);
+        // ensure CancelCheckpointMarker is broadcast downstream.
+        assertTrue(recordOrEvent instanceof CancelCheckpointMarker);
+        assertEquals(checkpointId, ((CancelCheckpointMarker) recordOrEvent).getCheckpointId());
+        testHarness.endInput();
+        testHarness.waitForTaskCompletion();
+    }
 
-		@Override
-		public void run() {
-			signalRunLatch.trigger();
-			countDownLatch.countDown();
+    private static class MapOperator extends StreamMap<String, String> {
+        private static final long serialVersionUID = 1L;
 
-			try {
-				countDownLatch.await();
-			} catch (InterruptedException e) {
-				ExceptionUtils.rethrow(e);
-			}
+        public MapOperator() {
+            super((MapFunction<String, String>) value -> value);
+        }
 
-			future.complete(value);
-		}
+        @Override
+        public void notifyCheckpointAborted(long checkpointId) throws Exception {}
+    }
 
-		@Override
-		public boolean cancel(boolean mayInterruptIfRunning) {
-			future.cancel(mayInterruptIfRunning);
-			return true;
-		}
+    @Test
+    public void testNotifyCheckpointAbortedDuringAsyncPhase() throws Exception {
+        MockEnvironment mockEnvironment = MockEnvironment.builder().build();
+        SubtaskCheckpointCoordinatorImpl subtaskCheckpointCoordinator =
+                (SubtaskCheckpointCoordinatorImpl)
+                        new MockSubtaskCheckpointCoordinatorBuilder()
+                                .setEnvironment(mockEnvironment)
+                                .setExecutor(Executors.newSingleThreadExecutor())
+                                .setUnalignedCheckpointEnabled(true)
+                                .build();
 
-		@Override
-		public boolean isCancelled() {
-			return future.isCancelled();
-		}
+        final BlockingRunnableFuture rawKeyedStateHandleFuture = new BlockingRunnableFuture();
+        OperatorSnapshotFutures operatorSnapshotResult =
+                new OperatorSnapshotFutures(
+                        DoneFuture.of(SnapshotResult.empty()),
+                        rawKeyedStateHandleFuture,
+                        DoneFuture.of(SnapshotResult.empty()),
+                        DoneFuture.of(SnapshotResult.empty()),
+                        DoneFuture.of(SnapshotResult.empty()),
+                        DoneFuture.of(SnapshotResult.empty()));
 
-		@Override
-		public boolean isDone() {
-			return future.isDone();
-		}
+        final OperatorChain<String, AbstractStreamOperator<String>> operatorChain =
+                operatorChain(new CheckpointOperator(operatorSnapshotResult));
 
-		@Override
-		public SnapshotResult<KeyedStateHandle> get() throws InterruptedException, ExecutionException {
-			return future.get();
-		}
+        long checkpointId = 42L;
+        subtaskCheckpointCoordinator
+                .getChannelStateWriter()
+                .start(checkpointId, CheckpointOptions.forCheckpointWithDefaultLocation());
+        subtaskCheckpointCoordinator.checkpointState(
+                new CheckpointMetaData(checkpointId, System.currentTimeMillis()),
+                CheckpointOptions.forCheckpointWithDefaultLocation(),
+                new CheckpointMetricsBuilder(),
+                operatorChain,
+                () -> true);
+        rawKeyedStateHandleFuture.awaitRun();
+        assertEquals(1, subtaskCheckpointCoordinator.getAsyncCheckpointRunnableSize());
+        assertFalse(rawKeyedStateHandleFuture.isCancelled());
 
-		@Override
-		public SnapshotResult<KeyedStateHandle> get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException {
-			return future.get();
-		}
+        subtaskCheckpointCoordinator.notifyCheckpointAborted(
+                checkpointId, operatorChain, () -> true);
+        assertTrue(rawKeyedStateHandleFuture.isCancelled());
+        assertEquals(0, subtaskCheckpointCoordinator.getAsyncCheckpointRunnableSize());
+    }
 
-		void awaitRun() throws InterruptedException {
-			signalRunLatch.await();
-		}
-	}
+    @Test
+    public void testNotifyCheckpointAbortedAfterAsyncPhase() throws Exception {
+        TestTaskStateManager stateManager = new TestTaskStateManager();
+        MockEnvironment mockEnvironment =
+                MockEnvironment.builder().setTaskStateManager(stateManager).build();
+        SubtaskCheckpointCoordinatorImpl subtaskCheckpointCoordinator =
+                (SubtaskCheckpointCoordinatorImpl)
+                        new MockSubtaskCheckpointCoordinatorBuilder()
+                                .setEnvironment(mockEnvironment)
+                                .build();
 
-	private static class CheckpointOperator implements OneInputStreamOperator<String, String> {
+        final OperatorChain<?, ?> operatorChain = getOperatorChain(mockEnvironment);
 
-		private static final long serialVersionUID = 1L;
+        long checkpointId = 42L;
+        subtaskCheckpointCoordinator.checkpointState(
+                new CheckpointMetaData(checkpointId, System.currentTimeMillis()),
+                CheckpointOptions.forCheckpointWithDefaultLocation(),
+                new CheckpointMetricsBuilder(),
+                operatorChain,
+                () -> true);
+        subtaskCheckpointCoordinator.notifyCheckpointAborted(
+                checkpointId, operatorChain, () -> true);
+        assertEquals(0, subtaskCheckpointCoordinator.getAbortedCheckpointSize());
+        assertEquals(checkpointId, stateManager.getNotifiedAbortedCheckpointId());
+    }
 
-		private final OperatorSnapshotFutures operatorSnapshotFutures;
+    private OperatorChain<?, ?> getOperatorChain(MockEnvironment mockEnvironment) throws Exception {
+        return new OperatorChain<>(
+                new MockStreamTaskBuilder(mockEnvironment).build(), new NonRecordWriter<>());
+    }
 
-		private boolean checkpointed = false;
+    private <T> OperatorChain<T, AbstractStreamOperator<T>> operatorChain(
+            OneInputStreamOperator<T, T>... streamOperators) throws Exception {
+        return OperatorChainTest.setupOperatorChain(streamOperators);
+    }
 
-		CheckpointOperator(OperatorSnapshotFutures operatorSnapshotFutures) {
-			this.operatorSnapshotFutures = operatorSnapshotFutures;
-		}
+    private static final class BlockingRunnableFuture
+            implements RunnableFuture<SnapshotResult<KeyedStateHandle>> {
 
-		boolean isCheckpointed() {
-			return checkpointed;
-		}
+        private final CompletableFuture<SnapshotResult<KeyedStateHandle>> future =
+                new CompletableFuture<>();
 
-		@Override
-		public void open() throws Exception {
-		}
+        private final OneShotLatch signalRunLatch = new OneShotLatch();
 
-		@Override
-		public void close() throws Exception {
-		}
+        private final CountDownLatch countDownLatch;
 
-		@Override
-		public void dispose() {
-		}
+        private final SnapshotResult<KeyedStateHandle> value;
 
-		@Override
-		public void prepareSnapshotPreBarrier(long checkpointId) {
-		}
+        private BlockingRunnableFuture() {
+            // count down twice to wait for notify checkpoint aborted to cancel.
+            this.countDownLatch = new CountDownLatch(2);
+            this.value = SnapshotResult.empty();
+        }
 
-		@Override
-		public OperatorSnapshotFutures snapshotState(long checkpointId, long timestamp, CheckpointOptions checkpointOptions, CheckpointStreamFactory storageLocation) throws Exception {
-			this.checkpointed = true;
-			return operatorSnapshotFutures;
-		}
+        @Override
+        public void run() {
+            signalRunLatch.trigger();
+            countDownLatch.countDown();
 
-		@Override
-		public void initializeState(StreamTaskStateInitializer streamTaskStateManager) throws Exception {
-		}
+            try {
+                countDownLatch.await();
+            } catch (InterruptedException e) {
+                ExceptionUtils.rethrow(e);
+            }
 
-		@Override
-		public void setKeyContextElement1(StreamRecord<?> record) {
-		}
+            future.complete(value);
+        }
 
-		@Override
-		public void setKeyContextElement2(StreamRecord<?> record) {
-		}
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            future.cancel(mayInterruptIfRunning);
+            return true;
+        }
 
-		@Override
-		public MetricGroup getMetricGroup() {
-			return null;
-		}
+        @Override
+        public boolean isCancelled() {
+            return future.isCancelled();
+        }
 
-		@Override
-		public OperatorID getOperatorID() {
-			return new OperatorID();
-		}
+        @Override
+        public boolean isDone() {
+            return future.isDone();
+        }
 
-		@Override
-		public void notifyCheckpointComplete(long checkpointId) {
-		}
+        @Override
+        public SnapshotResult<KeyedStateHandle> get()
+                throws InterruptedException, ExecutionException {
+            return future.get();
+        }
 
-		@Override
-		public void notifyCheckpointAborted(long checkpointId) {
-		}
+        @Override
+        public SnapshotResult<KeyedStateHandle> get(long timeout, TimeUnit unit)
+                throws InterruptedException, ExecutionException {
+            return future.get();
+        }
 
-		@Override
-		public void setCurrentKey(Object key) {
-		}
+        void awaitRun() throws InterruptedException {
+            signalRunLatch.await();
+        }
+    }
 
-		@Override
-		public Object getCurrentKey() {
-			return null;
-		}
+    private static class CheckpointOperator implements OneInputStreamOperator<String, String> {
 
-		@Override
-		public void processElement(StreamRecord<String> element) throws Exception {
-		}
+        private static final long serialVersionUID = 1L;
 
-		@Override
-		public void processWatermark(Watermark mark) throws Exception {
-		}
+        private final OperatorSnapshotFutures operatorSnapshotFutures;
 
-		@Override
-		public void processLatencyMarker(LatencyMarker latencyMarker) {
-		}
-	}
+        private boolean checkpointed = false;
+
+        CheckpointOperator(OperatorSnapshotFutures operatorSnapshotFutures) {
+            this.operatorSnapshotFutures = operatorSnapshotFutures;
+        }
+
+        boolean isCheckpointed() {
+            return checkpointed;
+        }
+
+        @Override
+        public void open() throws Exception {}
+
+        @Override
+        public void close() throws Exception {}
+
+        @Override
+        public void dispose() {}
+
+        @Override
+        public void prepareSnapshotPreBarrier(long checkpointId) {}
+
+        @Override
+        public OperatorSnapshotFutures snapshotState(
+                long checkpointId,
+                long timestamp,
+                CheckpointOptions checkpointOptions,
+                CheckpointStreamFactory storageLocation)
+                throws Exception {
+            this.checkpointed = true;
+            return operatorSnapshotFutures;
+        }
+
+        @Override
+        public void initializeState(StreamTaskStateInitializer streamTaskStateManager)
+                throws Exception {}
+
+        @Override
+        public void setKeyContextElement1(StreamRecord<?> record) {}
+
+        @Override
+        public void setKeyContextElement2(StreamRecord<?> record) {}
+
+        @Override
+        public MetricGroup getMetricGroup() {
+            return null;
+        }
+
+        @Override
+        public OperatorID getOperatorID() {
+            return new OperatorID();
+        }
+
+        @Override
+        public void notifyCheckpointComplete(long checkpointId) {}
+
+        @Override
+        public void notifyCheckpointAborted(long checkpointId) {}
+
+        @Override
+        public void setCurrentKey(Object key) {}
+
+        @Override
+        public Object getCurrentKey() {
+            return null;
+        }
+
+        @Override
+        public void processElement(StreamRecord<String> element) throws Exception {}
+
+        @Override
+        public void processWatermark(Watermark mark) throws Exception {}
+
+        @Override
+        public void processLatencyMarker(LatencyMarker latencyMarker) {}
+    }
+
+    private static SubtaskCheckpointCoordinator coordinator(
+            boolean unalignedCheckpointEnabled, ChannelStateWriter channelStateWriter)
+            throws IOException {
+        return new SubtaskCheckpointCoordinatorImpl(
+                new TestCheckpointStorageWorkerView(100),
+                "test",
+                StreamTaskActionExecutor.IMMEDIATE,
+                new CloseableRegistry(),
+                newDirectExecutorService(),
+                new DummyEnvironment(),
+                (message, unused) -> fail(message),
+                (unused1, unused2) -> CompletableFuture.completedFuture(null),
+                0,
+                channelStateWriter);
+    }
 }

@@ -53,6 +53,9 @@ import scala.util.control.Breaks._
   */
 class TableTestBase {
 
+  @Rule
+  def usesLegacyRows: LegacyRowResource = LegacyRowResource.INSTANCE
+
   // used for accurate exception information checking.
   val expectedException = ExpectedException.none()
 
@@ -347,7 +350,8 @@ case class StreamTableTestUtil(
     javaEnv,
     streamPlanner,
     executor,
-    true)
+    true,
+    Thread.currentThread().getContextClassLoader)
 
   val env = new StreamExecutionEnvironment(javaEnv)
   val tableEnv = new ScalaStreamTableEnvironmentImpl(
@@ -358,7 +362,8 @@ case class StreamTableTestUtil(
     env,
     streamPlanner,
     executor,
-    true)
+    true,
+    Thread.currentThread().getContextClassLoader)
 
   def addTable[T: TypeInformation](
       name: String,
